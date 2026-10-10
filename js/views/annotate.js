@@ -1,7 +1,7 @@
 // Anotar: texto, firma, resaltado, lápiz y corrector (limpieza básica de manchas o dedos).
 import * as db from '../db.js';
 import { icon } from '../icons.js';
-import { h, $, $$, toast, sheet, promptDlg, pickFiles, confirmDlg } from '../ui.js';
+import { h, $, $$, toast, sheet, pickFiles, confirmDlg } from '../ui.js';
 import { decodeBlob, drawAnnotations, annBounds, sampleBorderColor, updateThumb, signatureFromPhoto, makeCanvas } from '../imaging.js';
 import { savePage } from '../pages.js';
 import { settings, save } from '../settings.js';
@@ -24,7 +24,7 @@ export async function render(root, { pageId, tool: initialTool }) {
   let anns = structuredClone(page.annotations || []);
   const undo = [], redo = [];
   let tool = 'select', sel = -1, dirty = false;
-  const opt = { textColor: COLORS.text[0], penColor: COLORS.pen[1], hlColor: COLORS.highlight[0], textSize: 0.028, penWidth: 0.004 };
+  const opt = { textColor: COLORS.text[0], penColor: COLORS.pen[1], hlColor: COLORS.highlight[0], textSize: 0.04, penWidth: 0.004 };
 
   root.innerHTML = `
     <div class="stage-view">
@@ -147,14 +147,86 @@ export async function render(root, { pageId, tool: initialTool }) {
     sel = anns.length - 1; tool = 'select'; panel(); draw();
   }
 
-  async function editText(i) {
-    const a = anns[i];
-    const t = await promptDlg('Editar texto', a.text, { multiline: true });
-    if (t == null) return;
-    snapshot();
-    if (!t.trim()) { anns.splice(i, 1); sel = -1; } else a.text = t;
-    panel(); draw();
+  // Editor de texto flotante sobre la página: escribes encima de la imagen, eliges color
+  // en la columna de la derecha, tamaño en la de la izquierda y "Cambiar estilo".
+  const TEXT_COLORS = ['#e11d48', '#16a34a', '#2563eb', '#facc15', '#ffffff', '#111111'];
+  const TEXT_STYLES = ['Normal', 'Negrita', 'Fondo blanco', 'Fondo de color'];
+  const isLight = c => { const m = c.match(/\w\w/g).map(x => parseInt(x, 16)); return (m[0] * 299 + m[1] * 587 + m[2] * 114) / 1000 > 160; };
+  function applyStyle(a, style, color) {
+    a.style = style; a.bold = style !== 0; a.bg = null; a.color = color; a.baseColor = color;
+    if (style === 2) a.bg = 'rgba(255,255,255,0.92)';
+    if (style === 3) { a.bg = color; a.color = isLight(color) ? '#111111' : '#ffffff'; }
   }
+
+  function openTextEditor({ index = -1, x = null, y = null } = {}) {
+    const existing = index >= 0 ? anns[index] : null;
+    let color = existing ? (existing.baseColor || existing.color) : opt.textColor;
+    let style = existing ? (existing.style ?? (existing.bold ? 1 : 0)) : (opt.textStyle || 0);
+    let size = existing ? existing.size : opt.textSize;
+    const ed = h(`<div class="text-editor" role="dialog" aria-label="Escribir texto">
+      <div class="te-top">
+        <button class="te-btn" data-t="cancel">Cancelar</button>
+        <button class="te-btn te-style" data-t="style">Cambiar estilo</button>
+        <button class="te-btn te-done" data-t="done">Listo</button>
+      </div>
+      <div class="te-size"><input type="range" min="10" max="90" aria-label="Tamaño del texto"></div>
+      <div class="te-wrap"><textarea rows="1" placeholder="Escribe algo aquí" spellcheck="true"></textarea></div>
+      <div class="te-colors">${TEXT_COLORS.map(c => `<button class="color-dot" data-c="${c}" style="background:${c}" aria-label="Color"></button>`).join('')}</div>
+    </div>`);
+    document.body.append(ed);
+    const ta = $('textarea', ed), range = $('.te-size input', ed);
+    ta.value = existing ? existing.text : '';
+    range.value = Math.round(size * 1000);
+    const paint = () => {
+      const px = Math.max(14, size * H); // mismo tamaño con el que quedará sobre la página
+      ta.style.fontSize = `${px}px`;
+      ta.style.fontWeight = style === 0 ? '500' : '700';
+      const tmp = {}; applyStyle(tmp, style, color);
+      ta.style.color = tmp.color;
+      ta.style.background = tmp.bg || 'transparent';
+      ta.style.padding = tmp.bg ? '4px 12px' : '0';
+      $$('.te-colors .color-dot', ed).forEach(d => d.classList.toggle('on', d.dataset.c === color));
+      $('.te-style', ed).textContent = `Estilo: ${TEXT_STYLES[style]}`;
+      ta.style.height = 'auto'; ta.style.height = `${ta.scrollHeight}px`;
+    };
+    paint();
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+    ta.addEventListener('input', paint);
+    range.addEventListener('input', () => { size = range.value / 1000; paint(); });
+    $$('.te-colors .color-dot', ed).forEach(d => d.onclick = e => { e.preventDefault(); color = d.dataset.c; paint(); ta.focus(); });
+    // Evita que tocar los botones cierre el teclado
+    ed.addEventListener('pointerdown', e => { if (e.target.closest('button,input')) e.preventDefault(); });
+
+    const close = commit => {
+      const text = ta.value.replace(/\s+$/, '');
+      ed.remove();
+      if (!commit) return;
+      opt.textColor = color; opt.textSize = size; opt.textStyle = style;
+      if (existing) {
+        snapshot();
+        if (!text.trim()) { anns.splice(index, 1); sel = -1; } else { existing.text = text; existing.size = size; applyStyle(existing, style, color); }
+      } else if (text.trim()) {
+        snapshot();
+        const a = { type: 'text', x: 0, y: 0, text, size };
+        applyStyle(a, style, color);
+        const b = annBounds(a, ctx, W, H);
+        a.x = Math.max(0.01, Math.min(0.99 - b.w, (x ?? 0.5) - (x == null ? b.w / 2 : 0)));
+        a.y = Math.max(0.01, Math.min(0.99 - b.h, (y ?? 0.4) - (y == null ? b.h / 2 : b.h / 2)));
+        anns.push(a);
+        sel = anns.length - 1;
+      }
+      tool = 'select'; panel(); draw();
+    };
+    ed.addEventListener('click', e => {
+      const t = e.target.closest('[data-t]')?.dataset.t;
+      if (t === 'cancel') close(false);
+      else if (t === 'done') close(true);
+      else if (t === 'style') { style = (style + 1) % TEXT_STYLES.length; paint(); ta.focus(); }
+      else if (e.target === ed) close(true);
+    });
+  }
+
+  function editText(i) { openTextEditor({ index: i }); }
 
   // ---------- Firmas ----------
   function openSignatures() {
@@ -277,7 +349,7 @@ export async function render(root, { pageId, tool: initialTool }) {
       if (i >= 0) { snapshot(); act = { kind: 'move', start: [x, y], orig: structuredClone(anns[i]), moved: false }; }
       return;
     }
-    if (tool === 'text') { promptDlg('Escribe el texto', '', { multiline: true }).then(t => { if (t && t.trim()) addText(t, x, y); }); return; }
+    if (tool === 'text') { openTextEditor({ x, y }); return; }
     if (tool === 'pen') { act = { kind: 'pen', a: { type: 'path', points: [[x, y]], color: opt.penColor, width: opt.penWidth } }; return; }
     if (tool === 'highlight' || tool === 'whiteout') { act = { kind: 'rect', start: [x, y], a: { type: 'rect', mode: tool === 'highlight' ? 'highlight' : 'fill', color: tool === 'highlight' ? opt.hlColor : '#ffffff', x, y, w: 0, h: 0 } }; return; }
     if (tool === 'sign') openSignatures();
@@ -359,6 +431,6 @@ export async function render(root, { pageId, tool: initialTool }) {
   if (initialTool && TOOLS.some(t => t[0] === initialTool)) tool = initialTool;
   updUndo(); panel(); layout();
   if (tool === 'sign') setTimeout(openSignatures, 150);
-  if (tool === 'text') toast('Toca la página donde quieras escribir');
+  if (tool === 'text') setTimeout(() => openTextEditor(), 120);
   return () => { ro.disconnect(); window.removeEventListener('keydown', onKey); };
 }

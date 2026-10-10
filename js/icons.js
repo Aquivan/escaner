@@ -22,6 +22,8 @@ const P = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
   next: '<path d="m9 18 6-6-6-6"/>',
+  chevDown: '<path d="m6 9 6 6 6-6"/>',
+  chevUp: '<path d="m18 15-6-6-6 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   more: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',

@@ -254,7 +254,8 @@ export async function render(root, params) {
           <button data-a="rotate" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
           <button data-a="gallery" title="Cambiar por una de la galería"><span>Galería</span>${icon('image')}</button>
           <button data-a="full" title="Imagen completa"><span>Todo</span>${icon('expand')}</button>
-          <button data-a="auto" title="Detectar bordes"><span>Detectar</span>${icon('wand')}</button>
+          <button data-a="auto" class="extra" title="Detectar bordes"><span>Detectar</span>${icon('wand')}</button>
+          <button data-a="toggle" class="side-toggle" aria-label="Más opciones" title="Más opciones"><span>Cerrar</span><i class="chev-down">${icon('chevDown')}</i><i class="chev-up">${icon('chevUp')}</i></button>
         </div>
         <div class="rot-badge cam-rot" hidden></div>
         <div class="review-actions">
@@ -267,6 +268,7 @@ export async function render(root, params) {
       panel.addEventListener('click', async e => {
         const a = e.target.closest('[data-a]')?.dataset.a;
         if (!a) return;
+        if (a === 'toggle') { $('.side-tools', panel).classList.toggle('open'); return; }
         if (a === 'auto') { const d = await detectQuad(preview); if (d) { cr.set(d); toast('Bordes detectados', 'ok'); } else toast('No se encontraron bordes'); return; }
         if (a === 'full') { cr.set(FULL); return; }
         if (a === 'rotate') {

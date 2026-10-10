@@ -38,11 +38,11 @@ export async function render(root, params) {
           <button data-s="crop" title="Recortar y rotar"><span>Recortar</span>${icon('crop')}</button>
           <button data-s="pen" title="Lápiz"><span>Lápiz</span>${icon('pen')}</button>
           <button data-s="text" title="Añadir texto"><span>Texto</span>${icon('type')}</button>
-          <button data-s="sign" title="Firmar"><span>Firma</span>${icon('signature')}</button>
-          <button data-s="rotate" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
-          <button data-s="retake" id="retake" title="Volver a escanear"><span>Repetir</span>${icon('camera')}</button>
-          <button data-s="del" id="del" title="Eliminar"><span>Eliminar</span>${icon('trash')}</button>
-          <button data-s="toggle" class="side-toggle" title="Mostrar nombres"><span>Cerrar</span>${icon('more')}</button>
+          <button data-s="sign" class="extra" title="Firmar"><span>Firma</span>${icon('signature')}</button>
+          <button data-s="rotate" class="extra" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
+          <button data-s="retake" class="extra" id="retake" title="Volver a escanear"><span>Repetir</span>${icon('camera')}</button>
+          <button data-s="del" class="extra" id="del" title="Eliminar"><span>Eliminar</span>${icon('trash')}</button>
+          <button data-s="toggle" class="side-toggle" aria-label="Más opciones" title="Más opciones"><span>Cerrar</span><i class="chev-down">${icon('chevDown')}</i><i class="chev-up">${icon('chevUp')}</i></button>
         </div>
       </div>
       <div class="stage-panel" id="panel" hidden></div>
@@ -259,7 +259,7 @@ export async function render(root, params) {
     if (a === 'ocr') go('ocr', { docId, pageIndex: idx });
   });
 
-  // Menú lateral: toca ⋯ para ver los nombres (como en OneDrive) o úsalo solo con iconos
+  // Menú lateral: plegado muestra Recortar, Lápiz y Texto; la flecha lo despliega con nombres
   $('#side', root).addEventListener('click', async e => {
     const a = e.target.closest('[data-s]')?.dataset.s;
     if (!a || a === 'retake' || a === 'del') return;
