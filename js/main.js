@@ -30,6 +30,7 @@ async function render(state) {
     window.scrollTo(0, 0);
     cleanup = (await mod.render(root, state.params || {})) || null;
   } catch (e) {
+    if (seq !== renderSeq) return; // la vista ya cambió: el error es de una pantalla abandonada
     console.error(e);
     toast(`Error: ${e.message}`, 'error');
     if (name !== 'home') go('home', {}, { replace: true });

@@ -17,7 +17,7 @@ const TOOLS = [
   ['highlight', 'highlighter', 'Resaltar'], ['pen', 'pen', 'Lápiz'], ['whiteout', 'eraser', 'Corrector'],
 ];
 
-export async function render(root, { pageId }) {
+export async function render(root, { pageId, tool: initialTool }) {
   const page = await db.getPage(pageId);
   if (!page) { back(); return; }
   const base = await decodeBlob(page.processed, 2400);
@@ -356,6 +356,9 @@ export async function render(root, { pageId }) {
 
   const ro = new ResizeObserver(layout);
   ro.observe(stage);
+  if (initialTool && TOOLS.some(t => t[0] === initialTool)) tool = initialTool;
   updUndo(); panel(); layout();
+  if (tool === 'sign') setTimeout(openSignatures, 150);
+  if (tool === 'text') toast('Toca la página donde quieras escribir');
   return () => { ro.disconnect(); window.removeEventListener('keydown', onKey); };
 }

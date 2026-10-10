@@ -5,7 +5,7 @@ import { h, $, toast, pickFiles, progress, embedded } from '../ui.js';
 import { makeCanvas, canvasToBlob, decodeBlob, renderPage, blobUrl } from '../imaging.js';
 import { detectQuad, detectQuadSync, FULL } from '../detect.js';
 import { loadOpenCV, cvReady } from '../loader.js';
-import { blankPage, addPages, composeIdCard, importFiles } from '../pages.js';
+import { blankPage, addPages, composeIdCard, importFiles, removePagesFromDoc } from '../pages.js';
 import { createCropper } from '../cropper.js';
 import { settings, save } from '../settings.js';
 import { go, back } from '../nav.js';
@@ -14,6 +14,8 @@ export async function render(root, params) {
   let mode = params.mode === 'id' ? 'id' : 'doc';
   let docId = params.docId || null;
   let insertAt = params.insertAt ?? null;
+  let replaceId = params.replaceId || null; // repetir una página concreta
+  let createdHere = false, firstIdx = null;
   let count = 0;
   let stream = null, track = null, torch = false;
   let running = true;
@@ -53,7 +55,7 @@ export async function render(root, params) {
   const setHint = t => { hint.textContent = t; hint.hidden = !t; };
   const updateMode = () => {
     root.querySelectorAll('.cam-modes [data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
-    $('#title', root).textContent = mode === 'id' ? 'Carnet / DNI' : 'Escanear';
+    $('#title', root).textContent = params.replaceId ? 'Repetir página' : mode === 'id' ? 'Carnet / DNI' : 'Escanear';
   };
   updateMode();
 
@@ -61,6 +63,7 @@ export async function render(root, params) {
     if (docId) return db.getDoc(docId);
     const d = await db.newDoc(mode === 'id' ? 'Carnet' : undefined);
     docId = d.id;
+    createdHere = true;
     return d;
   }
 
@@ -215,8 +218,19 @@ export async function render(root, params) {
 
   async function addToDoc(page) {
     const doc = await ensureDoc();
-    const at = insertAt != null ? insertAt : doc.pageIds.length;
+    let at = insertAt != null ? insertAt : doc.pageIds.length;
+    if (replaceId) {
+      // Repetir: la nueva foto ocupa el lugar de la anterior y se vuelve a la revisión
+      const old = doc.pageIds.indexOf(replaceId);
+      if (old >= 0) at = old;
+      await addPages(doc, [page], at);
+      if (old >= 0) await removePagesFromDoc(doc, [replaceId]);
+      replaceId = null; count++;
+      setTimeout(finish, 0);
+      return;
+    }
     await addPages(doc, [page], at);
+    if (firstIdx == null) firstIdx = at;
     if (insertAt != null) insertAt++;
     count++;
     $('#thumb', root).hidden = false;
@@ -258,6 +272,7 @@ export async function render(root, params) {
     try {
       const doc = await ensureDoc();
       const before = doc.pageIds.length;
+      if (firstIdx == null) firstIdx = insertAt ?? before;
       const pages = await importFiles(doc, files, pr);
       if (insertAt != null && pages.length) {
         // importFiles añade al final: movemos a la posición pedida
@@ -280,14 +295,16 @@ export async function render(root, params) {
     await queue;
     pr && pr.close();
     if (idFront) toast('Falta el reverso del carnet; se descartó el anverso');
-    if (docId && count) go('doc', { id: docId }, { replace: true }); else back();
+    if (params.returnBack || params.replaceId) back();
+    else if (docId && count) go('editor', { docId, index: firstIdx ?? 0, fromScan: true, newDoc: createdHere }, { replace: true });
+    else back();
   }
 
   // ---------- Eventos ----------
   $('#shutter', root).onclick = () => capture(false);
   $('#done', root).onclick = finish;
   $('#thumb', root).onclick = finish;
-  $('#close', root).onclick = async () => { await queue; if (docId && count) go('doc', { id: docId }, { replace: true }); else back(); };
+  $('#close', root).onclick = finish;
   $('#gallery', root).onclick = async () => { const f = await pickFiles({ accept: 'image/*,application/pdf' }); if (f.length) handleFiles(f); };
   const updateCapMode = () => root.querySelectorAll('.cam-modes [data-c]').forEach(b => b.classList.toggle('on', (b.dataset.c === 'auto') === !!settings.autoCapture));
   updateCapMode();
