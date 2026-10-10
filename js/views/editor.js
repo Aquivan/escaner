@@ -34,9 +34,15 @@ export async function render(root, params) {
       </header>
       <div class="stage" id="stage">
         <canvas id="cv"></canvas><div class="spinner" id="spin" style="position:absolute"></div>
-        <div class="stage-fabs">
-          <button class="fab-round" id="retake" aria-label="Volver a escanear esta página" title="Volver a escanear">${icon('camera')}</button>
-          <button class="fab-round" id="del" aria-label="Eliminar esta página" title="Eliminar">${icon('trash')}</button>
+        <div class="side-tools" id="side" aria-label="Opciones de la página">
+          <button data-s="crop" title="Recortar y rotar"><span>Recortar</span>${icon('crop')}</button>
+          <button data-s="pen" title="Lápiz"><span>Lápiz</span>${icon('pen')}</button>
+          <button data-s="text" title="Añadir texto"><span>Texto</span>${icon('type')}</button>
+          <button data-s="sign" title="Firmar"><span>Firma</span>${icon('signature')}</button>
+          <button data-s="rotate" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
+          <button data-s="retake" id="retake" title="Volver a escanear"><span>Repetir</span>${icon('camera')}</button>
+          <button data-s="del" id="del" title="Eliminar"><span>Eliminar</span>${icon('trash')}</button>
+          <button data-s="toggle" class="side-toggle" title="Mostrar nombres"><span>Cerrar</span>${icon('more')}</button>
         </div>
       </div>
       <div class="stage-panel" id="panel" hidden></div>
@@ -45,10 +51,7 @@ export async function render(root, params) {
         <span class="tool-sep"></span>
         <button data-a="filters">${icon('drop')}Filtros</button>
         <button data-a="adjust">${icon('sliders')}Ajustes</button>
-        <button data-a="crop">${icon('crop')}Recortar y rotar</button>
         <button data-a="clean">${icon('eraser')}Limpiar</button>
-        <button data-a="text">${icon('type')}Añadir texto</button>
-        <button data-a="sign">${icon('signature')}Firmar</button>
         <button data-a="annotate">${icon('highlighter')}Resaltar y dibujar</button>
         <button data-a="ocr">${icon('ocr')}Extraer texto</button>
       </div>
@@ -256,6 +259,24 @@ export async function render(root, params) {
     if (a === 'ocr') go('ocr', { docId, pageIndex: idx });
   });
 
+  // Menú lateral: toca ⋯ para ver los nombres (como en OneDrive) o úsalo solo con iconos
+  $('#side', root).addEventListener('click', async e => {
+    const a = e.target.closest('[data-s]')?.dataset.s;
+    if (!a || a === 'retake' || a === 'del') return;
+    const side = $('#side', root);
+    if (a === 'toggle') {
+      side.classList.toggle('open');
+      try { localStorage.setItem('sideOpen', side.classList.contains('open') ? '1' : ''); } catch { /* */ }
+      return;
+    }
+    if (a === 'rotate') { rotateBy(90); return; }
+    await persist();
+    if (a === 'crop') go('crop', { pageId: page.id });
+    if (a === 'pen') go('annotate', { pageId: page.id, tool: 'pen' });
+    if (a === 'text') go('annotate', { pageId: page.id, tool: 'text' });
+    if (a === 'sign') go('annotate', { pageId: page.id, tool: 'sign' });
+  });
+  try { if (localStorage.getItem('sideOpen')) $('#side', root).classList.add('open'); } catch { /* */ }
   $('#retake', root).onclick = async () => { await persist(); go('camera', { docId, replaceId: page.id }); };
   $('#del', root).onclick = async () => {
     if (!(await confirmDlg('¿Eliminar esta página?', 'Eliminar', true))) return;

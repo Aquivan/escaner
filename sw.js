@@ -1,6 +1,6 @@
 // Service worker: la app funciona sin conexión y las librerías pesadas
 // (OpenCV, OCR, PDF) se descargan una sola vez.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const APP = `escaner-app-${VERSION}`;
 const LIBS = 'escaner-libs-v1'; // librerías versionadas: no cambian entre versiones de la app
 

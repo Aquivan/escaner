@@ -47,7 +47,7 @@ export async function render(root, params) {
       <div class="cam-bottom">
         <div class="cam-thumb" id="thumb" hidden><b id="cnt">0</b></div>
         <button class="shutter" id="shutter" aria-label="Capturar"><i></i></button>
-        <button class="btn primary cam-done" id="done" hidden>${icon('check')}Listo</button>
+        <button class="btn primary cam-done" id="done" hidden>Revisar${icon('next')}</button>
       </div>
     </div>`;
 
@@ -186,16 +186,18 @@ export async function render(root, params) {
 
   // Procesa una foto: detecta (o pide ajustar) esquinas y la añade
   async function handleShot(blob, liveQuad) {
-    const preview = await decodeBlob(blob, 1600);
+    let preview = await decodeBlob(blob, 1600);
     let q = await detectQuad(preview).catch(() => null);
     if (!q && liveQuad) q = liveQuad;
+    let rotation = 0;
     if (!q || settings.reviewCapture) {
-      const res = await reviewCorners(preview, q || FULL, !q);
+      const res = await reviewCorners(blob, preview, q || FULL, !q);
       if (!res) return; // repetir
-      q = res;
+      ({ q, rotation, blob } = res);
     }
     const page = blankPage(blob);
     page.corners = q;
+    page.rotation = rotation;
     if (mode === 'id') page.filter = { ...page.filter, preset: page.filter.preset === 'bw' ? 'bw' : 'auto' };
     enqueue(page);
   }
@@ -239,28 +241,52 @@ export async function render(root, params) {
     $('#done', root).hidden = false;
   }
 
-  // Revisión manual de esquinas dentro de la cámara
-  function reviewCorners(preview, q, failed) {
+  // Revisión de esquinas tras la foto, con menú lateral (girar, cambiar por otra de la galería,
+  // usar la imagen completa, detectar de nuevo) al estilo de los escáneres de Samsung y OneDrive.
+  function reviewCorners(blob, preview, q, failed) {
     reviewing = true;
+    let rotation = 0;
     return new Promise(resolve => {
-      const panel = h(`<div style="position:absolute;inset:0;background:var(--stage);z-index:5;display:flex;flex-direction:column">
+      const panel = h(`<div class="cam-review">
         <div class="cam-hint" style="z-index:6">${failed ? 'No se detectaron bordes: ajusta las esquinas' : 'Ajusta las esquinas'}</div>
         <div class="stage" style="flex:1"></div>
-        <div class="stage-bar">
-          <button class="tool" data-a="retake">${icon('camera')}Repetir</button>
-          <button class="tool" data-a="auto">${icon('wand')}Auto</button>
-          <button class="tool" data-a="full">${icon('expand')}Todo</button>
-          <button class="tool" data-a="ok">${icon('check')}Usar</button>
+        <div class="side-tools" aria-label="Opciones de la foto">
+          <button data-a="rotate" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
+          <button data-a="gallery" title="Cambiar por una de la galería"><span>Galería</span>${icon('image')}</button>
+          <button data-a="full" title="Imagen completa"><span>Todo</span>${icon('expand')}</button>
+          <button data-a="auto" title="Detectar bordes"><span>Detectar</span>${icon('wand')}</button>
+        </div>
+        <div class="rot-badge cam-rot" hidden></div>
+        <div class="review-actions">
+          <button class="btn ghost-dark" data-a="retake">${icon('camera')}Repetir</button>
+          <button class="btn primary" data-a="ok">${icon('check')}Usar foto</button>
         </div></div>`);
       stage.append(panel);
-      const cr = createCropper($('.stage', panel), preview, q);
+      let cr = createCropper($('.stage', panel), preview, q);
+      const badge = $('.cam-rot', panel);
       panel.addEventListener('click', async e => {
         const a = e.target.closest('[data-a]')?.dataset.a;
         if (!a) return;
-        if (a === 'auto') { const d = await detectQuad(preview); if (d) cr.set(d); else toast('No se encontraron bordes'); return; }
+        if (a === 'auto') { const d = await detectQuad(preview); if (d) { cr.set(d); toast('Bordes detectados', 'ok'); } else toast('No se encontraron bordes'); return; }
         if (a === 'full') { cr.set(FULL); return; }
+        if (a === 'rotate') {
+          rotation = (rotation + 90) % 360;
+          badge.hidden = !rotation; badge.textContent = `Se girará ${rotation}°`;
+          return;
+        }
+        if (a === 'gallery') {
+          const f = await pickFiles({ accept: 'image/*', multiple: false });
+          if (!f.length) return;
+          blob = f[0];
+          preview = await decodeBlob(blob, 1600);
+          const d = await detectQuad(preview).catch(() => null);
+          cr.destroy();
+          cr = createCropper($('.stage', panel), preview, d || FULL);
+          $('.cam-hint', panel).textContent = d ? 'Bordes detectados: revisa las esquinas' : 'No se detectaron bordes: ajusta las esquinas';
+          return;
+        }
         if (a === 'ok' && !cr.valid) { toast('Las esquinas se cruzan; corrígelas', 'error'); return; }
-        const out = a === 'ok' ? cr.corners : null;
+        const out = a === 'ok' ? { q: cr.corners, rotation, blob } : null;
         cr.destroy(); panel.remove(); reviewing = false;
         resolve(out);
       });
