@@ -3,15 +3,17 @@ import * as db from '../db.js';
 import { icon } from '../icons.js';
 import { h, $, toast, pickFiles, progress, embedded } from '../ui.js';
 import { makeCanvas, canvasToBlob, decodeBlob, renderPage, blobUrl } from '../imaging.js';
-import { detectQuad, detectQuadSync, FULL } from '../detect.js';
+import { detectQuad, detectSmart, sharpness, BLUR_THRESHOLD, mlReady, loadMl, FULL } from '../detect.js';
 import { loadOpenCV, cvReady } from '../loader.js';
 import { blankPage, addPages, composeIdCard, importFiles, removePagesFromDoc } from '../pages.js';
 import { createCropper } from '../cropper.js';
+import { homography } from '../filters.js';
 import { settings, save } from '../settings.js';
 import { go, back } from '../nav.js';
 
 export async function render(root, params) {
-  let mode = params.mode === 'id' ? 'id' : 'doc';
+  const MODES = { doc: 'Escanear', book: 'Libro', id: 'Carnet / DNI', board: 'Pizarra', receipt: 'Recibo' };
+  let mode = MODES[params.mode] ? params.mode : 'doc';
   let docId = params.docId || null;
   let insertAt = params.insertAt ?? null;
   let replaceId = params.replaceId || null; // repetir una página concreta
@@ -38,8 +40,13 @@ export async function render(root, params) {
         <div class="cam-flash" id="flash"></div>
       </div>
       <div class="cam-modes">
-        <button data-m="doc">Documento</button>
-        <button data-m="id">Carnet / DNI</button>
+        <div class="cam-mode-list">
+          <button data-m="doc">Documento</button>
+          <button data-m="book">Libro</button>
+          <button data-m="id">Carnet</button>
+          <button data-m="board">Pizarra</button>
+          <button data-m="receipt">Recibo</button>
+        </div>
         <span class="cam-sep"></span>
         <button data-c="auto" aria-label="Captura automática">Auto</button>
         <button data-c="manual" aria-label="Captura manual">Manual</button>
@@ -55,13 +62,13 @@ export async function render(root, params) {
   const setHint = t => { hint.textContent = t; hint.hidden = !t; };
   const updateMode = () => {
     root.querySelectorAll('.cam-modes [data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === mode));
-    $('#title', root).textContent = params.replaceId ? 'Repetir página' : mode === 'id' ? 'Carnet / DNI' : 'Escanear';
+    $('#title', root).textContent = params.replaceId ? 'Repetir página' : MODES[mode];
   };
   updateMode();
 
   async function ensureDoc() {
     if (docId) return db.getDoc(docId);
-    const d = await db.newDoc(mode === 'id' ? 'Carnet' : undefined);
+    const d = await db.newDoc({ id: 'Carnet', book: 'Libro', board: 'Pizarra', receipt: 'Recibo' }[mode]);
     docId = d.id;
     createdHere = true;
     return d;
@@ -102,7 +109,6 @@ export async function render(root, params) {
   }
 
   // ---------- Detección en vivo ----------
-  const small = makeCanvas(1, 1);
   let smooth = null, lastQuad = null, stableSince = 0, cooldownUntil = 0, lastCaptureQuad = null;
   function displayRect() {
     const vw = video.videoWidth, vh = video.videoHeight, sw = stage.clientWidth, sh = stage.clientHeight;
@@ -111,34 +117,38 @@ export async function render(root, params) {
   }
   const qdist = (a, b) => (a && b ? Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1]))) : 1);
 
-  function loop() {
+  let sharpNow = 0;
+  async function loop() {
     if (!running) return;
     if (video.videoWidth && !reviewing && !busyCapture) {
-      const vw = video.videoWidth, vh = video.videoHeight;
-      const k = 360 / Math.max(vw, vh);
-      if (small.width !== Math.round(vw * k)) { small.width = Math.round(vw * k); small.height = Math.round(vh * k); }
-      small.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, 0, small.width, small.height);
-      let q = cvReady() ? detectQuadSync(small, 0.15) : null;
+      let r = { quad: null };
+      try { r = await detectSmart(video, { live: true }); } catch (e) { console.warn(e); }
+      if (!running) return;
+      const q = r.quad;
       if (q) smooth = smooth && qdist(q, smooth) < 0.12 ? smooth.map((p, i) => [p[0] * 0.55 + q[i][0] * 0.45, p[1] * 0.55 + q[i][1] * 0.45]) : q;
       else smooth = null;
-      drawOverlay(smooth);
+      sharpNow = r.canvas ? sharpness(r.canvas, smooth) : 0;
+      const sharp = sharpNow >= BLUR_THRESHOLD;
+      drawOverlay(smooth, sharp);
       const now = performance.now();
-      if (!cvReady()) setHint('Preparando detección de bordes…');
-      else if (!smooth) { setHint(mode === 'id' ? (idFront ? 'Enfoca el REVERSO del carnet' : 'Enfoca el ANVERSO del carnet') : 'Buscando documento…'); stableSince = 0; }
+      if (!cvReady() && !mlReady()) setHint('Preparando detección de bordes…');
+      else if (!smooth) { setHint(mode === 'id' ? (idFront ? 'Enfoca el REVERSO del carnet' : 'Enfoca el ANVERSO del carnet') : mode === 'book' ? 'Enfoca el libro abierto (2 páginas)' : 'Buscando documento…'); stableSince = 0; }
       else {
         if (lastQuad && qdist(smooth, lastQuad) < 0.02) { if (!stableSince) stableSince = now; } else stableSince = 0;
         const movedSinceLast = qdist(smooth, lastCaptureQuad) > 0.08;
-        const armed = settings.autoCapture && stableSince && now > cooldownUntil && movedSinceLast;
+        // La captura automática exige además que la imagen esté nítida
+        const armed = settings.autoCapture && stableSince && now > cooldownUntil && movedSinceLast && sharp;
         $('#shutter', root).classList.toggle('armed', !!armed);
         if (armed && now - stableSince > 1100) { setHint(''); capture(true); }
+        else if (!sharp) setHint('Imagen borrosa: sujeta firme o acerca un poco');
         else setHint(settings.autoCapture ? (movedSinceLast || now > cooldownUntil + 4000 ? 'No te muevas…' : 'Cambia de página') : 'Documento detectado');
       }
       lastQuad = smooth;
     }
-    setTimeout(() => requestAnimationFrame(loop), 90);
+    setTimeout(() => requestAnimationFrame(loop), 60);
   }
 
-  function drawOverlay(q) {
+  function drawOverlay(q, sharp = true) {
     const r = displayRect();
     const dpr = window.devicePixelRatio || 1;
     ov.style.width = `${stage.clientWidth}px`; ov.style.height = `${stage.clientHeight}px`;
@@ -149,8 +159,8 @@ export async function render(root, params) {
     if (!q) return;
     const pts = q.map(([x, y]) => [r.x + x * r.w, r.y + y * r.h]);
     c.beginPath(); c.moveTo(...pts[0]); pts.slice(1).forEach(p => c.lineTo(...p)); c.closePath();
-    c.fillStyle = 'rgba(45,212,191,.18)'; c.fill();
-    c.lineWidth = 3; c.strokeStyle = '#2dd4bf'; c.stroke();
+    c.fillStyle = sharp ? 'rgba(45,212,191,.18)' : 'rgba(251,191,36,.16)'; c.fill();
+    c.lineWidth = 3; c.strokeStyle = sharp ? '#2dd4bf' : '#fbbf24'; c.stroke();
     for (const p of pts) { c.beginPath(); c.arc(p[0], p[1], 6, 0, 7); c.fillStyle = '#fff'; c.fill(); }
   }
 
@@ -187,11 +197,15 @@ export async function render(root, params) {
   // Procesa una foto: detecta (o pide ajustar) esquinas y la añade
   async function handleShot(blob, liveQuad) {
     let preview = await decodeBlob(blob, 1600);
-    let q = await detectQuad(preview).catch(() => null);
+    const det = await detectSmart(preview).catch(() => ({ quad: null }));
+    let q = det.quad;
     if (!q && liveQuad) q = liveQuad;
+    const blurry = det.canvas ? sharpness(det.canvas, q) < BLUR_THRESHOLD * 0.8 : false;
     let rotation = 0;
-    if (!q || settings.reviewCapture) {
-      const res = await reviewCorners(blob, preview, q || FULL, !q);
+    if (!q || blurry || settings.reviewCapture) {
+      const msg = blurry ? 'La foto salió borrosa: repítela o úsala igual' : !q ? 'No se detectaron bordes: ajusta las esquinas' : 'Ajusta las esquinas';
+      if (blurry && navigator.vibrate) navigator.vibrate([40, 60, 40]);
+      const res = await reviewCorners(blob, preview, q || FULL, msg);
       if (!res) return; // repetir
       ({ q, rotation, blob } = res);
     }
@@ -199,7 +213,26 @@ export async function render(root, params) {
     page.corners = q;
     page.rotation = rotation;
     if (mode === 'id') page.filter = { ...page.filter, preset: page.filter.preset === 'bw' ? 'bw' : 'auto' };
+    if (mode === 'board') page.filter = { preset: 'board', shadows: true, brightness: 0, contrast: 0, sharpness: 30 };
+    if (mode === 'receipt') page.filter = { preset: 'gray', shadows: true, brightness: 0, contrast: 25, sharpness: 40 };
+    if (mode === 'book') {
+      // Libro abierto: una foto con dos páginas → dos hojas (izquierda y derecha)
+      const [left, right] = splitSpread(q);
+      const p2 = blankPage(blob);
+      p2.corners = right; p2.rotation = rotation; p2.filter = { ...page.filter };
+      page.corners = left;
+      enqueue(page); enqueue(p2);
+      return;
+    }
     enqueue(page);
+  }
+
+  // Divide el cuadrilátero de un libro abierto por su línea central real (en perspectiva)
+  function splitSpread(q) {
+    const H = homography([[0, 0], [1, 0], [1, 1], [0, 1]], q);
+    const map = (x, y) => { const d = H[6] * x + H[7] * y + 1; return [(H[0] * x + H[1] * y + H[2]) / d, (H[3] * x + H[4] * y + H[5]) / d]; };
+    const top = map(0.5, 0), bot = map(0.5, 1);
+    return [[q[0], top, bot, q[3]], [top, q[1], q[2], bot]];
   }
 
   function enqueue(page) {
@@ -243,12 +276,12 @@ export async function render(root, params) {
 
   // Revisión de esquinas tras la foto, con menú lateral (girar, cambiar por otra de la galería,
   // usar la imagen completa, detectar de nuevo) al estilo de los escáneres de Samsung y OneDrive.
-  function reviewCorners(blob, preview, q, failed) {
+  function reviewCorners(blob, preview, q, message) {
     reviewing = true;
     let rotation = 0;
     return new Promise(resolve => {
       const panel = h(`<div class="cam-review">
-        <div class="cam-hint" style="z-index:6">${failed ? 'No se detectaron bordes: ajusta las esquinas' : 'Ajusta las esquinas'}</div>
+        <div class="cam-hint ${/borrosa/.test(message) ? 'warn' : ''}" style="z-index:6">${message}</div>
         <div class="stage" style="flex:1"></div>
         <div class="side-tools" aria-label="Opciones de la foto">
           <button data-a="rotate" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
@@ -353,7 +386,8 @@ export async function render(root, params) {
   const onKey = e => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); capture(false); } };
   window.addEventListener('keydown', onKey);
 
-  loadOpenCV().catch(() => setHint('Sin detección automática: ajusta las esquinas a mano'));
+  loadOpenCV().catch(() => {});
+  loadMl();
   try { await startCamera(); setHint(''); loop(); } catch (e) { console.warn(e); showCamError(e); }
 
   return () => {

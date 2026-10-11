@@ -38,6 +38,9 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
       <label class="switch"><span class="sw-text">Escala de grises<small>Reduce el peso en documentos sin color</small></span><input type="checkbox" id="gray"></label>
       <label class="switch"><span class="sw-text">Numerar páginas</span><input type="checkbox" id="num"></label>
       <label class="field" style="margin-top:6px"><span>Marca de agua (opcional)</span><input class="input" id="wm" placeholder="p. ej. COPIA, CONFIDENCIAL"></label>
+      <label class="field" id="pwRow"><span>Contraseña para abrir el PDF (opcional)</span>
+        <div class="row"><input class="input" id="pw" type="password" autocomplete="new-password" placeholder="Sin contraseña"><button class="btn small" id="pwShow" type="button">Ver</button></div>
+        <small class="muted">Cifrado AES-256. Si la olvidas no se podrá abrir.</small></label>
     </div>
     <div class="est"><div><div class="small muted">Peso estimado · ${pages.length} pág.</div><b id="est">—</b></div><small id="estNote"></small></div>
   </div>`);
@@ -45,7 +48,7 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
   const s = sheet({
     title: 'Exportar', body,
     actions: [
-      ...(canShare ? [{ label: 'Compartir', icon: 'share', onClick: () => run(true) }] : []),
+      ...(canShare ? [{ label: 'Compartir / Drive', icon: 'share', onClick: () => run(true) }] : []),
       { label: 'Descargar', icon: 'download', cls: 'primary', onClick: () => run(false) },
     ],
   });
@@ -66,6 +69,7 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     $('#gray', body).checked = !!o.grayscale;
     $('#num', body).checked = !!o.pageNumbers;
     $('#wm', body).value = o.watermark || '';
+    $('#pwRow', body).hidden = o.format !== 'pdf';
     $$('#q .chip', body).forEach(c => { c.disabled = o.format === 'png'; });
   }
   const bindChips = (id, key, conv = v => v) => $$(`#${id} .chip`, body).forEach(c => c.onclick = () => {
@@ -78,6 +82,8 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
   $('#gray', body).onchange = e => { o.grayscale = e.target.checked; estimate(); };
   $('#num', body).onchange = e => { o.pageNumbers = e.target.checked; };
   $('#wm', body).oninput = e => { o.watermark = e.target.value.trim(); };
+  $('#pw', body).oninput = e => { o.password = e.target.value; };
+  $('#pwShow', body).onclick = () => { const i = $('#pw', body); i.type = i.type === 'password' ? 'text' : 'password'; };
 
   let estTok = 0, estT;
   function estimate() {
@@ -98,7 +104,9 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
 
   async function run(share) {
     const name = safeName($('#name', body).value || doc.name);
-    save('export', { ...o });
+    const { password, ...remember } = o; // la contraseña nunca se guarda
+    save('export', remember);
+    o.password = password;
     const pr = progress('Exportando…');
     try {
       let files;

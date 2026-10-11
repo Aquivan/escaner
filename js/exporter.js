@@ -150,7 +150,23 @@ export async function buildPdf(pages, opts, onProgress = () => {}, title = 'Docu
     }
   }
   onProgress(1, 'Guardando PDF…');
-  return pdf.save({ useObjectStreams: true });
+  const bytes = await pdf.save({ useObjectStreams: true });
+  return opts.password ? encryptPdf(bytes, opts.password) : bytes;
+}
+
+// Protege un PDF con contraseña (AES-256). Se necesita para abrirlo.
+export async function encryptPdf(bytes, password) {
+  const { PDFDocument } = await import(new URL('lib/pdf-encrypt.mjs', location.href).href);
+  const d = await PDFDocument.load(bytes);
+  d.encrypt({ userPassword: password, ownerPassword: password, permissions: { printing: 'highResolution', copying: true } });
+  return d.save();
+}
+
+// Quita la contraseña de un PDF (hay que conocerla)
+export async function decryptPdf(bytes, password) {
+  const { PDFDocument } = await import(new URL('lib/pdf-encrypt.mjs', location.href).href);
+  const d = await PDFDocument.load(bytes, { password });
+  return d.save();
 }
 
 export async function buildImages(pages, opts, fmt, onProgress = () => {}, base = 'pagina') {

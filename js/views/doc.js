@@ -44,7 +44,7 @@ export async function render(root, { id }) {
 
   function draw() {
     $('#title', root).textContent = doc.name;
-    $('#info', root).innerHTML = `<span>${pages.length} página${pages.length === 1 ? '' : 's'}</span>·<span>${fmtDate(doc.updated)}</span>
+    $('#info', root).innerHTML = `${doc.typeLabel ? `<span class="tag">${doc.typeLabel}</span>` : ''}${doc.info?.total ? `<span>Total ${doc.info.total}</span>·` : ''}<span>${pages.length} página${pages.length === 1 ? '' : 's'}</span>·<span>${fmtDate(doc.updated)}</span>
       ${pages.length > 1 ? `·<span>${selecting ? 'Toca para seleccionar' : 'Mantén pulsada una página y arrástrala para reordenar'}</span>` : ''}`;
     grid.classList.toggle('selecting', selecting);
     grid.innerHTML = '';
@@ -195,6 +195,20 @@ export async function render(root, { id }) {
   };
   $('#more', root).onclick = () => menu([
     { icon: 'pen', label: 'Renombrar', onClick: rename },
+    { icon: 'wand', label: 'Nombre automático (lee el documento)', onClick: async () => {
+      const pr = progress('Leyendo el documento…');
+      try {
+        const { suggestForDoc } = await import('../docinfo.js');
+        const r = await suggestForDoc(doc, { onProgress: (f, st) => pr.set(f, st) });
+        pr.close();
+        if (!r) { toast('No se encontró texto para nombrarlo'); return; }
+        doc.name = r.name; doc.type = r.type; doc.typeLabel = r.label;
+        doc.info = { number: r.number, date: r.date, total: r.total, ruc: r.ruc, company: r.company };
+        await db.putDoc(doc);
+        toast(`${r.label} detectado`, 'ok');
+        reload();
+      } catch (e) { pr.close(); toast(e.message, 'error'); }
+    } },
     { icon: 'ocr', label: 'Reconocer texto de todo (OCR)', onClick: ocrAll },
     { icon: 'scissors', label: 'Separar en varios documentos', onClick: splitDoc },
     { icon: 'duplicate', label: 'Duplicar documento', onClick: async () => { const nd = await pagesToNewDoc(pages, `${doc.name} (copia)`); toast('Documento duplicado', 'ok'); go('doc', { id: nd.id }); } },

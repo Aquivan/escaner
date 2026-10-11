@@ -396,3 +396,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .te-colors .color-dot.on { border-color: #fff; transform: scale(1.12); }
 .te-size { position: absolute; left: 4px; top: 18vh; height: 220px; width: 44px; }
 .te-size input { position: absolute; width: 200px; left: -78px; top: 100px; transform: rotate(-90deg); accent-color: #5eead4; }
+.cam-hint.warn { background: #b45309; color: #fff; }
+.auto-name { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -4px 0 12px; }
+.auto-name .tag { margin-right: 6px; }
+.cam-modes { justify-content: flex-start; }
+.cam-mode-list { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+.cam-mode-list::-webkit-scrollbar { display: none; }

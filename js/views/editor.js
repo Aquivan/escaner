@@ -3,7 +3,7 @@
 // miniaturas numeradas para cambiar de página, reordenar y añadir más, y repetir o borrar.
 import * as db from '../db.js';
 import { icon } from '../icons.js';
-import { h, $, $$, toast, progress, confirmDlg, menu, sheet, esc, safeName } from '../ui.js';
+import { h, $, $$, toast, progress, confirmDlg, menu, sheet, esc } from '../ui.js';
 import { decodeBlob, canvasToImg, imgToCanvas, runFilter, renderPage, fitCanvas, drawAnnotations, blobUrl } from '../imaging.js';
 import { DEFAULT_FILTER } from '../filters.js';
 import { savePage, removePagesFromDoc, duplicatePage } from '../pages.js';
@@ -12,7 +12,7 @@ import { openExport } from '../export-sheet.js';
 import { go, back } from '../nav.js';
 
 const PRESET_LIST = [
-  ['original', 'Original'], ['auto', 'Mejorado'], ['clean', 'Limpio'], ['gray', 'Grises'], ['bw', 'B/N'], ['photo', 'Foto'],
+  ['original', 'Original'], ['auto', 'Mejorado'], ['clean', 'Limpio'], ['gray', 'Grises'], ['bw', 'B/N'], ['board', 'Pizarra'], ['photo', 'Foto'],
 ];
 const NEUTRAL = { preset: 'original', shadows: false, sharpness: 0, brightness: 0, contrast: 0 };
 const isEnhanced = f => (f.preset === 'auto' || f.preset === 'clean') && f.shadows;
@@ -294,8 +294,9 @@ export async function render(root, params) {
   async function finish() {
     await persist();
     if (!fromScan) { back(); return; }
-    // Guardar: nombre y, si se quiere, exportar enseguida
+    // Guardar: nombre (con sugerencia automática leyendo el documento) y, si se quiere, exportar
     const body = h(`<div><label class="field"><span>Nombre del documento</span><input class="input" id="nm" value="${esc(doc.name)}"></label>
+      <div class="auto-name" id="an"><button class="btn small" id="anBtn">${icon('wand')}Nombre automático</button><span class="small muted" id="anMsg">Lee el documento y lo nombra (tipo, número, empresa y fecha)</span></div>
       <p class="small muted">${doc.pageIds.length} página${doc.pageIds.length === 1 ? '' : 's'}. Se guarda en este teléfono; luego puedes exportarlo cuando quieras.</p></div>`);
     const s = sheet({
       title: 'Guardar escaneo', body,
@@ -304,11 +305,28 @@ export async function render(root, params) {
         { label: 'Guardar y exportar', icon: 'download', cls: 'primary', value: 'export' },
       ],
     });
+    const { suggestForDoc } = await import('../docinfo.js');
+    let info = null;
+    const applyInfo = r => {
+      info = r;
+      if (!r) { $('#anMsg', body).textContent = 'No se encontró texto para sugerir un nombre'; return; }
+      $('#nm', body).value = r.name;
+      $('#anMsg', body).innerHTML = `<span class="tag">${esc(r.label)}</span>${r.total ? ` Total ${esc(r.total)}` : ''}`;
+    };
+    // Si ya hay texto reconocido, se sugiere al instante
+    suggestForDoc(doc, { runOcr: false }).then(r => { if (r && r.type !== 'documento') applyInfo(r); }).catch(() => {});
+    $('#anBtn', body).onclick = async () => {
+      const b = $('#anBtn', body); b.disabled = true;
+      $('#anMsg', body).textContent = 'Leyendo el documento…';
+      try { applyInfo(await suggestForDoc(doc, { onProgress: (f, st) => { $('#anMsg', body).textContent = `${st || 'Leyendo'}…`; } })); } catch (e) { $('#anMsg', body).textContent = `No se pudo leer: ${e.message}`; }
+      b.disabled = false;
+    };
     setTimeout(() => $('#nm', body).select(), 80);
     const nameEl = $('#nm', body);
     const v = await s.done;
     if (!v) return;
-    doc.name = safeName(nameEl.value.trim()) || doc.name;
+    doc.name = nameEl.value.trim().replace(/[\\<>"|?*]+/g, '') || doc.name;
+    if (info) { doc.type = info.type; doc.typeLabel = info.label; doc.info = { number: info.number, date: info.date, total: info.total, ruc: info.ruc, company: info.company }; }
     await db.putDoc(doc);
     go('doc', { id: docId }, { replace: true });
     if (v === 'export') setTimeout(async () => openExport(doc, await db.getPages(doc)), 350);

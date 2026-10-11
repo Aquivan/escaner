@@ -184,5 +184,6 @@ export function debounce(fn, ms) {
 }
 
 export function safeName(s) {
-  return String(s || 'documento').replace(/[\\/:*?"<>|]+/g, '-').trim().slice(0, 120) || 'documento';
+  // Algunos navegadores descartan el nombre si lleva "·" u otros símbolos: se cambian por guiones
+  return String(s || 'documento').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e·]/g, '').replace(/\s*·\s*/g, ' - ').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 120) || 'documento';
 }

@@ -33,8 +33,14 @@ export function isConvexQuad(q) {
   return true;
 }
 
-// Detecta el documento en un canvas/imagen. Devuelve esquinas normalizadas o null.
-export async function detectQuad(source, { minArea = 0.12 } = {}) {
+// Detecta el documento (IA + visión clásica). Devuelve esquinas normalizadas o null.
+export async function detectQuad(source) {
+  if (!cvReady()) { try { await loadOpenCV(); } catch { /* sigue solo con IA */ } }
+  return (await detectSmart(source)).quad;
+}
+
+// Solo visión clásica (OpenCV)
+export async function detectClassic(source, { minArea = 0.12 } = {}) {
   if (!cvReady()) { try { await loadOpenCV(); } catch { return null; } }
   const cv = window.cv;
   const sw = source.width || source.videoWidth, sh = source.height || source.videoHeight;
@@ -146,3 +152,73 @@ function quadRegularity(q) {
   }
   return Math.max(0.2, 1 - s / 4);
 }
+
+// ---------- Detección con IA (DocCornerNet, ~3,5 MB, ~30 ms) ----------
+// Encuentra la hoja incluso con poco contraste con el fondo (papel blanco sobre mesa clara).
+let mlMod = null, mlFailed = false;
+const ML_BASE = () => new URL('lib/mldetect/', location.href).href;
+export async function loadMl() {
+  if (mlFailed) return null;
+  if (!mlMod) {
+    mlMod = import(new URL('lib/mldetect/scanic-mlDetector.js', location.href).href)
+      .then(async m => { await m.initializeMl({ assetBaseUrl: ML_BASE() }); return m; })
+      .catch(e => { console.warn('Detector IA no disponible', e); mlFailed = true; mlMod = null; return null; });
+  }
+  return mlMod;
+}
+export const mlReady = () => !!mlMod && !mlFailed;
+
+async function detectMl(canvas) {
+  const m = await loadMl();
+  if (!m) return null;
+  const r = await m.detectDocumentMl(canvas, { assetBaseUrl: ML_BASE(), minScore: 0.6 });
+  if (!r || !r.success || !r.corners) return null;
+  const W = canvas.width, H = canvas.height;
+  const q = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'].map(k => [
+    Math.min(1, Math.max(0, r.corners[k].x / W)), Math.min(1, Math.max(0, r.corners[k].y / H))]);
+  if (!isConvexQuad(q) || polyArea(q) < 0.08) return null;
+  return { q, score: r.score };
+}
+
+const quadDist = (a, b) => Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1])));
+
+// Combina IA y visión clásica: la IA decide dónde está la hoja; si la clásica coincide,
+// se usan sus esquinas porque se pegan al borde exacto del papel.
+export async function detectSmart(source, { live = false } = {}) {
+  const sw = source.width || source.videoWidth, sh = source.height || source.videoHeight;
+  const k = (live ? 360 : 480) / Math.max(sw, sh);
+  const c = makeCanvas(sw * k, sh * k);
+  c.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0, c.width, c.height);
+  const classical = cvReady() ? detectOnSmall(window.cv, c, 0.12) : null;
+  let ml = null;
+  try { ml = await detectMl(c); } catch (e) { console.warn(e); }
+  if (ml && classical) return { quad: quadDist(ml.q, classical) < 0.035 ? classical : ml.q, method: quadDist(ml.q, classical) < 0.035 ? 'mixto' : 'ia', score: ml.score, canvas: c };
+  if (ml) return { quad: ml.q, method: 'ia', score: ml.score, canvas: c };
+  if (classical) return { quad: classical, method: 'clasico', score: null, canvas: c };
+  return { quad: null, canvas: c };
+}
+
+// ---------- Nitidez (para avisar de fotos movidas) ----------
+// Varianza del laplaciano dentro del documento, en una imagen reducida a ~360 px.
+export function sharpness(canvas, quad) {
+  const W = canvas.width, H = canvas.height;
+  let x0 = 0, y0 = 0, x1 = W, y1 = H;
+  if (quad) {
+    const xs = quad.map(p => p[0] * W), ys = quad.map(p => p[1] * H);
+    const mx = (Math.max(...xs) - Math.min(...xs)) * 0.12, my = (Math.max(...ys) - Math.min(...ys)) * 0.12;
+    x0 = Math.max(1, Math.floor(Math.min(...xs) + mx)); x1 = Math.min(W - 1, Math.ceil(Math.max(...xs) - mx));
+    y0 = Math.max(1, Math.floor(Math.min(...ys) + my)); y1 = Math.min(H - 1, Math.ceil(Math.max(...ys) - my));
+  }
+  if (x1 - x0 < 8 || y1 - y0 < 8) return 0;
+  const d = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+  const g = i => d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  let sum = 0, sum2 = 0, n = 0;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const i = (y * W + x) * 4;
+    const l = 4 * g(i) - g(i - 4) - g(i + 4) - g(i - W * 4) - g(i + W * 4);
+    sum += l; sum2 += l * l; n++;
+  }
+  const mean = sum / n;
+  return sum2 / n - mean * mean;
+}
+export const BLUR_THRESHOLD = 60; // por debajo, la foto se considera movida o desenfocada

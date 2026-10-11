@@ -1,13 +1,13 @@
 // Pantalla de inicio: documentos, búsqueda (también dentro del texto OCR) y accesos rápidos.
 import * as db from '../db.js';
 import { icon } from '../icons.js';
-import { h, $, $$, esc, fmtDate, fmtBytes, toast, sheet, confirmDlg, pickFiles, progress, promptDlg } from '../ui.js';
+import { h, $, $$, esc, fmtDate, fmtBytes, toast, sheet, confirmDlg, pickFiles, progress, promptDlg, downloadBlob, shareFiles } from '../ui.js';
 import { blobUrl } from '../imaging.js';
 import { importFiles, pagesToNewDoc } from '../pages.js';
 import { settings, save } from '../settings.js';
 import { go } from '../nav.js';
 
-const FILTER_NAMES = { original: 'Original', auto: 'Color mejorado', clean: 'Documento limpio', gray: 'Escala de grises', bw: 'Blanco y negro', photo: 'Foto' };
+const FILTER_NAMES = { original: 'Original', auto: 'Color mejorado', clean: 'Documento limpio', gray: 'Escala de grises', bw: 'Blanco y negro', board: 'Pizarra', photo: 'Foto' };
 
 export async function render(root) {
   root.innerHTML = `
@@ -63,7 +63,7 @@ export async function render(root) {
     if (q) {
       await ensureText();
       shown = docs.filter(d => {
-        if (d.name.toLowerCase().includes(q)) return true;
+        if (d.name.toLowerCase().includes(q) || (d.typeLabel || '').toLowerCase().includes(q)) return true;
         const t = pageText[d.id];
         if (t && t.toLowerCase().includes(q)) { snips[d.id] = snippet(t, q); return true; }
         return false;
@@ -84,7 +84,7 @@ export async function render(root) {
         <div class="thumb">${icon('file')}</div>
         <span class="badge">${d.pageIds.length} pág.</span>
         <span class="check">${icon('check')}</span>
-        <div class="meta"><div class="name">${esc(d.name)}</div><div class="sub">${fmtDate(d.updated)}</div>
+        <div class="meta"><div class="name">${esc(d.name)}</div><div class="sub">${d.typeLabel ? `<span class="tag">${esc(d.typeLabel)}</span> ` : ''}${fmtDate(d.updated)}</div>
         ${snips[d.id] ? `<div class="snippet">${snips[d.id]}</div>` : ''}</div></button>`);
       list.append(card);
       if (d.pageIds[0]) db.getPage(d.pageIds[0]).then(p => { if (p && p.thumb) $('.thumb', card).innerHTML = `<img src="${blobUrl(p.thumb)}" alt="">`; });
@@ -202,6 +202,13 @@ async function openSettings(onChange) {
     <label class="switch"><span class="sw-text">Captura automática<small>Dispara sola cuando el documento está quieto y bien encuadrado</small></span><input type="checkbox" id="auto" ${settings.autoCapture ? 'checked' : ''}></label>
     <label class="switch"><span class="sw-text">Revisar recorte tras cada foto<small>Si está apagado, solo se abre cuando no se detectan bordes</small></span><input type="checkbox" id="rev" ${settings.reviewCapture ? 'checked' : ''}></label>
     <label class="switch"><span class="sw-text">Detectar bordes al importar fotos<small>Útil para fotos de papeles; apágalo para capturas de pantalla</small></span><input type="checkbox" id="det" ${settings.detectOnImport !== false ? 'checked' : ''}></label>
+    <div class="field-label" style="margin-top:14px">Copia de seguridad</div>
+    <p class="small muted" style="margin:4px 0 8px">Guarda todos tus documentos en un archivo (por ejemplo en Google Drive) para no perderlos si cambias de teléfono o borras el navegador.</p>
+    <div class="row wrap">
+      <button class="btn small" id="bkShare">${icon('share')}Guardar en Drive / compartir</button>
+      <button class="btn small" id="bkDown">${icon('download')}Descargar copia</button>
+      <button class="btn small" id="bkRestore">${icon('upload')}Restaurar copia</button>
+    </div>
     <p class="small muted" style="margin-top:12px">${icon('info')} Tus documentos se guardan solo en este dispositivo${est ? ` · Espacio usado: ${fmtBytes(est.usage)}` : ''}.</p>
   </div>`);
   const s = sheet({ title: 'Ajustes', body });
@@ -213,6 +220,27 @@ async function openSettings(onChange) {
   $('#auto', body).onchange = e => save('autoCapture', e.target.checked);
   $('#rev', body).onchange = e => save('reviewCapture', e.target.checked);
   $('#det', body).onchange = e => save('detectOnImport', e.target.checked);
+  const makeBackup = async () => {
+    const pr = progress('Creando copia de seguridad…');
+    try { const { createBackup } = await import('../backup.js'); const f = await createBackup(x => pr.set(x)); pr.close(); return f; } catch (e) { pr.close(); toast(e.message, 'error'); return null; }
+  };
+  $('#bkDown', body).onclick = async () => { const f = await makeBackup(); if (f) { downloadBlob(f, f.name); toast(`Copia creada (${fmtBytes(f.size)})`, 'ok'); } };
+  $('#bkShare', body).onclick = async () => {
+    const f = await makeBackup(); if (!f) return;
+    // En Android, el menú de compartir incluye "Guardar en Drive"
+    if (!(await shareFiles([f], f.name))) { downloadBlob(f, f.name); toast('Compartir no está disponible; se descargó la copia'); }
+  };
+  $('#bkRestore', body).onclick = async () => {
+    const files = await pickFiles({ accept: '.zip,application/zip', multiple: false });
+    if (!files.length) return;
+    const pr = progress('Restaurando…');
+    try {
+      const { restoreBackup } = await import('../backup.js');
+      const r = await restoreBackup(files[0], x => pr.set(x));
+      pr.close(); s.close();
+      toast(`Restaurados ${r.docs} documentos (${r.pages} páginas)`, 'ok');
+    } catch (e) { pr.close(); toast(e.message, 'error'); }
+  };
   await s.done;
   onChange && onChange();
 }

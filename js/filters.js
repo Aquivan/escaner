@@ -2,7 +2,7 @@
 // giro y filtros. Se usa desde un Web Worker y, como respaldo, en el hilo principal.
 // Una "imagen" aquí es {data: Uint8ClampedArray RGBA, width, height}.
 
-export const PRESETS = ['original', 'auto', 'clean', 'gray', 'bw', 'photo'];
+export const PRESETS = ['original', 'auto', 'clean', 'gray', 'bw', 'photo', 'board'];
 export const DEFAULT_FILTER = { preset: 'auto', brightness: 0, contrast: 0, sharpness: 25, shadows: true };
 
 const clamp = v => (v < 0 ? 0 : v > 255 ? 255 : v);
@@ -396,6 +396,15 @@ export function applyFilter(img, f = DEFAULT_FILTER) {
       if (s.sharpness > 0) sharpen(img, s.sharpness);
       adaptiveThreshold(img, Math.max(0.02, Math.min(0.35, 0.12 + s.brightness / 100 * 0.1)));
       return img;
+    case 'board': // Pizarra blanca: fondo blanco puro y trazos de rotulador vivos
+      removeShadows(img, true);
+      {
+        const lut = new Uint8ClampedArray(256);
+        for (let v = 0; v < 256; v++) { let x = (v / 255 - 0.18) / (0.8 - 0.18); x = x < 0 ? 0 : x > 1 ? 1 : x; lut[v] = Math.round(Math.pow(x, 1.6) * 255); }
+        applyLut(d, lut);
+      }
+      saturate(d, 1.8);
+      break;
     case 'photo': // Foto: realce suave sin tocar el fondo
       levels(img, 0.002, 0.998, 1);
       saturate(d, 1.1);

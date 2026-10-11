@@ -3,7 +3,7 @@
 // salvo en "Comprimir" y "A imágenes".
 import * as db from '../db.js';
 import { icon } from '../icons.js';
-import { h, $, $$, esc, toast, sheet, progress, pickFiles, downloadBlob, shareFiles, fmtBytes, safeName } from '../ui.js';
+import { h, $, $$, esc, toast, sheet, progress, pickFiles, downloadBlob, shareFiles, fmtBytes, safeName, promptDlg } from '../ui.js';
 import { loadPdfJs, loadPdfLib } from '../loader.js';
 import { makeCanvas, canvasToBlob } from '../imaging.js';
 import { makeSortable } from '../sortable.js';
@@ -22,6 +22,8 @@ const TOOL_INFO = {
   compress: ['compress', 'Comprimir PDF', 'Reduce el peso con niveles y peso estimado'],
   images: ['image', 'PDF a imágenes', 'Convierte cada página en JPG'],
   edit: ['pen', 'Editar en el escáner', 'Aplica filtros, OCR, firma y anotaciones'],
+  protect: ['stamp', 'Proteger con contraseña', 'Cifra el PDF (AES-256) para que pida contraseña'],
+  unlock: ['select', 'Quitar contraseña', 'Guarda una copia sin contraseña (debes conocerla)'],
 };
 
 export async function render(root, params) {
@@ -48,6 +50,7 @@ export async function render(root, params) {
   async function start(k) {
     const files = await pickFiles({ accept: 'application/pdf', multiple: k === 'merge' || k === 'organize' });
     if (!files.length) return;
+    if (!files.length) return;
     if (k === 'edit') {
       const pr = progress('Importando PDF…');
       try {
@@ -55,6 +58,24 @@ export async function render(root, params) {
         await importFiles(doc, files, pr);
         pr.close(); go('doc', { id: doc.id }, { replace: true });
       } catch (e) { pr.close(); toast(e.message, 'error'); }
+      return;
+    }
+    if (k === 'protect' || k === 'unlock') {
+      const f = files[0];
+      const pw = await promptDlg(k === 'protect' ? 'Contraseña para abrir el PDF' : 'Contraseña actual del PDF', '', { placeholder: 'Contraseña' });
+      if (!pw) return;
+      const pr = progress(k === 'protect' ? 'Cifrando…' : 'Quitando contraseña…');
+      try {
+        const { encryptPdf, decryptPdf } = await import('../exporter.js');
+        const src = new Uint8Array(await f.arrayBuffer());
+        const bytes = k === 'protect' ? await encryptPdf(src, pw) : await decryptPdf(src, pw);
+        pr.close();
+        const base = safeName(f.name.replace(/\.pdf$/i, ''));
+        await deliver([new File([bytes], `${base}${k === 'protect' ? '-protegido' : '-sin-clave'}.pdf`, { type: 'application/pdf' })]);
+      } catch (e) {
+        pr.close(); console.warn(e);
+        toast(k === 'unlock' && /password|decrypt|crypt/i.test(String(e.message)) ? 'Contraseña incorrecta' : `Error: ${e.message}`, 'error');
+      }
       return;
     }
     mode = k;

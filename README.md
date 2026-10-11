@@ -5,6 +5,9 @@ Escáner de documentos que funciona en el navegador del móvil o del ordenador. 
 ## Funciones
 
 **Escanear**
+- Detección de bordes con **IA** (DocCornerNet, ~3,5 MB) combinada con visión clásica: encuentra la hoja aunque el fondo sea parecido al papel.
+- **Aviso de foto borrosa**: la captura automática espera a que la imagen esté nítida; si una foto sale movida, avisa para repetirla.
+- Modos **Documento, Libro** (una foto de 2 páginas → 2 hojas), **Carnet, Pizarra y Recibo**.
 - Cámara con detección de bordes en vivo (OpenCV) y captura automática cuando el documento está quieto.
 - Modo lote: varias páginas seguidas. Flash (si el móvil lo permite).
 - Modo **Carnet/DNI**: anverso y reverso en una sola página A4, a tamaño real.
@@ -18,6 +21,8 @@ Escáner de documentos que funciona en el navegador del móvil o del ordenador. 
 - Girar, recortar de nuevo, duplicar e insertar páginas.
 
 **Organizar**
+- **Nombre automático**: lee el documento y lo nombra con tipo, número, empresa y fecha (boleta, factura, voucher/Yape, DNI, contrato, recibo, carta…).
+- **Copia de seguridad** de todo en un .zip, para guardarla en Google Drive y restaurarla en otro teléfono.
 - Reordenar arrastrando (en el móvil: mantener pulsado y arrastrar).
 - Unir documentos, separar (cada página, cada N o por rangos) y extraer las páginas seleccionadas.
 - Buscar por nombre y **dentro del texto** reconocido por OCR.
@@ -33,7 +38,7 @@ Escáner de documentos que funciona en el navegador del móvil o del ordenador. 
 - Deshacer y rehacer.
 
 **Exportar**
-- PDF, JPG, PNG o texto.
+- PDF, JPG, PNG o texto. PDF con **contraseña** (AES-256).
 - Resolución Baja (100 ppp), Media (150), Alta (300) o la que quieras (50–600).
 - Cinco niveles de compresión y **peso estimado antes de guardar**.
 - Tamaño de página: automático, A4, Carta, Oficio o A5. Escala de grises, numeración de páginas y marca de agua.
@@ -43,6 +48,7 @@ Escáner de documentos que funciona en el navegador del móvil o del ordenador. 
 - Unir, separar, extraer, organizar (ordenar, girar, quitar) sin perder calidad.
 - Comprimir por niveles con peso estimado.
 - PDF a imágenes JPG.
+- Proteger con contraseña y quitar contraseña.
 - Abrir un PDF en el escáner para aplicarle filtros, OCR, firmas y anotaciones.
 
 ## Límites conocidos
