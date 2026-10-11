@@ -209,7 +209,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .shutter.armed i { background: var(--accent-2); }
 .cam-thumb { justify-self: start; width: 56px; height: 56px; border-radius: 10px; border: 2px solid #fff; background: #222 center/cover; position: relative; cursor: pointer; }
 .cam-thumb b { position: absolute; top: -8px; right: -8px; background: var(--accent-2); color: #000; font-size: 12px; min-width: 22px; height: 22px; border-radius: 11px; display: grid; place-items: center; padding: 0 5px; }
-.cam-done { justify-self: end; }
+.cam-done { justify-self: end; grid-column: 3; }
+.cam-thumb { grid-column: 1; }
+.cam-bottom .shutter { grid-column: 2; }
 .cam-modes { display: flex; justify-content: center; gap: 4px; padding: 8px 6px; background: #000; }
 .cam-modes button { white-space: nowrap; background: none; border: 0; color: #cbd5e1; font-weight: 650; font-size: 13px; padding: 6px 12px; border-radius: 999px; cursor: pointer; letter-spacing: .03em; text-transform: uppercase; }
 .cam-modes button.on { color: #000; background: #fde047; }
@@ -402,3 +404,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .cam-modes { justify-content: flex-start; }
 .cam-mode-list { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
 .cam-mode-list::-webkit-scrollbar { display: none; }
+
+.cap-toggle { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 18px; border: 1.5px solid #64748b; background: transparent; color: #e2e8f0; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; cursor: pointer; }
+.cap-toggle .ic { width: 18px; height: 18px; }
+.cap-toggle.on { background: #5eead4; border-color: #5eead4; color: #042f2e; }
+.cam-modes button { padding: 6px 10px; font-size: 12.5px; }

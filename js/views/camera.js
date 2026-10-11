@@ -30,6 +30,7 @@ export async function render(root, params) {
       <header class="topbar dark">
         <button class="icon-btn" id="close" aria-label="Cerrar">${icon('x')}</button>
         <h1 id="title"></h1>
+        <button class="cap-toggle" id="capMode" aria-label="Modo de captura"></button>
         <button class="icon-btn" id="torch" aria-label="Flash" hidden>${icon('flashOff')}</button>
         <button class="icon-btn" id="gallery" aria-label="Importar de la galería">${icon('image')}</button>
       </header>
@@ -47,9 +48,6 @@ export async function render(root, params) {
           <button data-m="board">Pizarra</button>
           <button data-m="receipt">Recibo</button>
         </div>
-        <span class="cam-sep"></span>
-        <button data-c="auto" aria-label="Captura automática">Auto</button>
-        <button data-c="manual" aria-label="Captura manual">Manual</button>
       </div>
       <div class="cam-bottom">
         <div class="cam-thumb" id="thumb" hidden><b id="cnt">0</b></div>
@@ -117,7 +115,31 @@ export async function render(root, params) {
   }
   const qdist = (a, b) => (a && b ? Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1]))) : 1);
 
-  let sharpNow = 0;
+  let sharpNow = 0, newPageReady = true, lastSig = null, shots = 0;
+  // Huella 32×32 en grises del interior de la hoja, para saber si se cambió de hoja
+  // aunque la nueva esté exactamente en el mismo sitio.
+  function signature(canvas, q) {
+    const W = canvas.width, H = canvas.height;
+    let x = Math.max(q[0][0], q[3][0]) * W, x2 = Math.min(q[1][0], q[2][0]) * W;
+    let y = Math.max(q[0][1], q[1][1]) * H, y2 = Math.min(q[2][1], q[3][1]) * H;
+    const mx = (x2 - x) * 0.02, my = (y2 - y) * 0.02; x += mx; x2 -= mx; y += my; y2 -= my;
+    if (x2 - x < 8 || y2 - y < 8) return null;
+    const N = 32, t = makeCanvas(N, N), c = t.getContext('2d', { willReadFrequently: true });
+    c.drawImage(canvas, x, y, x2 - x, y2 - y, 0, 0, N, N);
+    const d = c.getImageData(0, 0, N, N).data, out = new Float32Array(N * N);
+    let m = 0;
+    for (let i = 0; i < N * N; i++) { out[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11; m += out[i]; }
+    m /= N * N; for (let i = 0; i < N * N; i++) out[i] -= m; // insensible a cambios de luz
+    return out;
+  }
+  // Diferencia relativa al contraste de las hojas (0 = igual; ~0,25 ruido; >0,45 otra hoja)
+  const sigDiff = (a, b) => {
+    if (!a || !b) return 0;
+    let s = 0, sa = 0, sb = 0;
+    for (let i = 0; i < a.length; i++) { s += Math.abs(a[i] - b[i]); sa += a[i] * a[i]; sb += b[i] * b[i]; }
+    const std = (Math.sqrt(sa / a.length) + Math.sqrt(sb / b.length)) / 2;
+    return s / a.length / Math.max(3, std);
+  };
   async function loop() {
     if (!running) return;
     if (video.videoWidth && !reviewing && !busyCapture) {
@@ -131,17 +153,21 @@ export async function render(root, params) {
       const sharp = sharpNow >= BLUR_THRESHOLD;
       drawOverlay(smooth, sharp);
       const now = performance.now();
+      if (!smooth) newPageReady = true; // se retiró o tapó la hoja: la siguiente será nueva
       if (!cvReady() && !mlReady()) setHint('Preparando detección de bordes…');
       else if (!smooth) { setHint(mode === 'id' ? (idFront ? 'Enfoca el REVERSO del carnet' : 'Enfoca el ANVERSO del carnet') : mode === 'book' ? 'Enfoca el libro abierto (2 páginas)' : 'Buscando documento…'); stableSince = 0; }
       else {
         if (lastQuad && qdist(smooth, lastQuad) < 0.02) { if (!stableSince) stableSince = now; } else stableSince = 0;
-        const movedSinceLast = qdist(smooth, lastCaptureQuad) > 0.08;
+        // ¿Hay una hoja nueva? Se movió, se tapó un momento al cambiarla o cambió su contenido
+        if (!newPageReady && (qdist(smooth, lastCaptureQuad) > 0.08 || (lastSig && sigDiff(signature(r.canvas, smooth), lastSig) > 0.45))) newPageReady = true;
         // La captura automática exige además que la imagen esté nítida
-        const armed = settings.autoCapture && stableSince && now > cooldownUntil && movedSinceLast && sharp;
+        const armed = settings.autoCapture && stableSince && now > cooldownUntil && newPageReady && sharp;
         $('#shutter', root).classList.toggle('armed', !!armed);
-        if (armed && now - stableSince > 1100) { setHint(''); capture(true); }
+        if (armed && now - stableSince > 1100) { setHint(''); lastSig = signature(r.canvas, smooth); capture(true); }
         else if (!sharp) setHint('Imagen borrosa: sujeta firme o acerca un poco');
-        else setHint(settings.autoCapture ? (movedSinceLast || now > cooldownUntil + 4000 ? 'No te muevas…' : 'Cambia de página') : 'Documento detectado');
+        else if (!settings.autoCapture) setHint('Documento detectado · pulsa el botón');
+        else if (!newPageReady) setHint(`✓ Página ${shots} lista · coloca la siguiente hoja`);
+        else setHint(shots ? `No te muevas… (página ${shots + 1})` : 'No te muevas…');
       }
       lastQuad = smooth;
     }
@@ -185,7 +211,8 @@ export async function render(root, params) {
     busyCapture = true;
     const fl = $('#flash', root); fl.classList.add('go'); requestAnimationFrame(() => requestAnimationFrame(() => fl.classList.remove('go')));
     if (navigator.vibrate) navigator.vibrate(30);
-    lastCaptureQuad = smooth; cooldownUntil = performance.now() + 2500; stableSince = 0;
+    lastCaptureQuad = smooth; cooldownUntil = performance.now() + 2500; stableSince = 0; newPageReady = false;
+    if (mode !== 'id') shots++;
     const liveQuad = smooth;
     try {
       const blob = await grabFrame();
@@ -272,6 +299,7 @@ export async function render(root, params) {
     $('#thumb', root).style.backgroundImage = `url(${blobUrl(page.thumb)})`;
     $('#cnt', root).textContent = count;
     $('#done', root).hidden = false;
+    if (settings.autoCapture && mode !== 'id') toast(`Página ${count} capturada · coloca la siguiente`, 'ok');
   }
 
   // Revisión de esquinas tras la foto, con menú lateral (girar, cambiar por otra de la galería,
@@ -367,14 +395,18 @@ export async function render(root, params) {
   $('#thumb', root).onclick = finish;
   $('#close', root).onclick = finish;
   $('#gallery', root).onclick = async () => { const f = await pickFiles({ accept: 'image/*,application/pdf' }); if (f.length) handleFiles(f); };
-  const updateCapMode = () => root.querySelectorAll('.cam-modes [data-c]').forEach(b => b.classList.toggle('on', (b.dataset.c === 'auto') === !!settings.autoCapture));
+  const updateCapMode = () => {
+    const b = $('#capMode', root);
+    b.innerHTML = settings.autoCapture ? `${icon('auto')}<span>Auto</span>` : `${icon('camera')}<span>Manual</span>`;
+    b.classList.toggle('on', !!settings.autoCapture);
+  };
   updateCapMode();
-  root.querySelectorAll('.cam-modes [data-c]').forEach(b => b.onclick = async () => {
-    await save('autoCapture', b.dataset.c === 'auto');
+  $('#capMode', root).onclick = async () => {
+    await save('autoCapture', !settings.autoCapture);
     updateCapMode();
     $('#shutter', root).classList.remove('armed');
-    toast(settings.autoCapture ? 'Automático: dispara solo cuando el documento está quieto' : 'Manual: pulsa el botón para capturar');
-  });
+    toast(settings.autoCapture ? 'Automático: captura sola cada hoja, una tras otra' : 'Manual: pulsa el botón para capturar');
+  };
   $('#torch', root).onclick = async e => {
     torch = !torch;
     try { await track.applyConstraints({ advanced: [{ torch }] }); e.currentTarget.innerHTML = icon(torch ? 'flash' : 'flashOff'); e.currentTarget.classList.toggle('on', torch); } catch { toast('Flash no disponible'); }

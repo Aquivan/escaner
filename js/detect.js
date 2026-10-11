@@ -193,32 +193,38 @@ export async function detectSmart(source, { live = false } = {}) {
   let ml = null;
   try { ml = await detectMl(c); } catch (e) { console.warn(e); }
   if (ml && classical) return { quad: quadDist(ml.q, classical) < 0.035 ? classical : ml.q, method: quadDist(ml.q, classical) < 0.035 ? 'mixto' : 'ia', score: ml.score, canvas: c };
-  if (ml) return { quad: ml.q, method: 'ia', score: ml.score, canvas: c };
+  // Solo IA (la clásica no ve nada): se exige más seguridad para no confundir techos o paredes
+  if (ml && ml.score >= 0.92) return { quad: ml.q, method: 'ia', score: ml.score, canvas: c };
   if (classical) return { quad: classical, method: 'clasico', score: null, canvas: c };
   return { quad: null, canvas: c };
 }
 
 // ---------- Nitidez (para avisar de fotos movidas) ----------
-// Varianza del laplaciano dentro del documento, en una imagen reducida a ~360 px.
+// Mira los bordes más marcados (el 0,5 % más fuerte del laplaciano dentro del documento):
+// en una foto movida hasta las letras pierden contraste, y en una hoja casi en blanco
+// basta con un título para que siga contando como nítida.
 export function sharpness(canvas, quad) {
   const W = canvas.width, H = canvas.height;
-  let x0 = 0, y0 = 0, x1 = W, y1 = H;
+  let x0 = 1, y0 = 1, x1 = W - 1, y1 = H - 1;
   if (quad) {
     const xs = quad.map(p => p[0] * W), ys = quad.map(p => p[1] * H);
-    const mx = (Math.max(...xs) - Math.min(...xs)) * 0.12, my = (Math.max(...ys) - Math.min(...ys)) * 0.12;
+    const mx = (Math.max(...xs) - Math.min(...xs)) * 0.08, my = (Math.max(...ys) - Math.min(...ys)) * 0.08;
     x0 = Math.max(1, Math.floor(Math.min(...xs) + mx)); x1 = Math.min(W - 1, Math.ceil(Math.max(...xs) - mx));
     y0 = Math.max(1, Math.floor(Math.min(...ys) + my)); y1 = Math.min(H - 1, Math.ceil(Math.max(...ys) - my));
   }
   if (x1 - x0 < 8 || y1 - y0 < 8) return 0;
   const d = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
   const g = i => d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-  let sum = 0, sum2 = 0, n = 0;
+  const hist = new Uint32Array(512);
+  let n = 0;
   for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
     const i = (y * W + x) * 4;
-    const l = 4 * g(i) - g(i - 4) - g(i + 4) - g(i - W * 4) - g(i + W * 4);
-    sum += l; sum2 += l * l; n++;
+    const l = Math.abs(4 * g(i) - g(i - 4) - g(i + 4) - g(i - W * 4) - g(i + W * 4));
+    hist[Math.min(511, l | 0)]++; n++;
   }
-  const mean = sum / n;
-  return sum2 / n - mean * mean;
+  // Media del 0,5 % de valores más altos
+  let need = Math.max(20, Math.round(n * 0.005)), acc = 0, sum = 0;
+  for (let v = 511; v >= 0 && acc < need; v--) { const take = Math.min(hist[v], need - acc); acc += take; sum += take * v; }
+  return acc ? sum / acc : 0;
 }
-export const BLUR_THRESHOLD = 60; // por debajo, la foto se considera movida o desenfocada
+export const BLUR_THRESHOLD = 90; // por debajo, la foto se considera movida o desenfocada
