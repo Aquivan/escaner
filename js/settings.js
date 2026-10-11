@@ -6,6 +6,7 @@ export const settings = {
   defaultFilter: { preset: 'auto' },
   autoCapture: true,
   flashMode: 'auto',        // auto | on | off
+  cameraId: null,           // cámara trasera con flash (se detecta sola)
   reviewCapture: false,     // abrir recorte tras cada captura
   detectOnImport: true,
   ocrLangs: ['spa'],

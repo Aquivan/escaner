@@ -221,9 +221,6 @@ function forEachBg(bg, w, h, fn) {
   }
 }
 
-// Ganancia máxima al aclarar: más allá solo se amplifica el ruido (fotos muy oscuras)
-const MAX_GAIN = 2.6;
-
 // Quita sombras/iluminación desigual dividiendo por el fondo estimado.
 // perChannel=true también corrige el tono del papel (blanquea).
 export function removeShadows(img, perChannel = false) {
@@ -234,13 +231,13 @@ export function removeShadows(img, perChannel = false) {
       const ch = new Uint8Array(n);
       for (let i = 0, j = c; i < n; i++, j += 4) ch[i] = d[j];
       const bg = backgroundGrid(ch, w, h);
-      forEachBg(bg, w, h, (i, v) => { const j = i * 4 + c; d[j] = clamp(d[j] * Math.min(MAX_GAIN, 248 / Math.max(v, 1))); });
+      forEachBg(bg, w, h, (i, v) => { const j = i * 4 + c; d[j] = clamp(d[j] * 248 / Math.max(v, 24)); });
     }
   } else {
     const L = lumArray(d, n);
     const bg = backgroundGrid(L, w, h);
     forEachBg(bg, w, h, (i, v) => {
-      const k = Math.min(MAX_GAIN, 245 / Math.max(v, 1)), j = i * 4;
+      const k = 245 / Math.max(v, 24), j = i * 4;
       d[j] = clamp(d[j] * k); d[j + 1] = clamp(d[j + 1] * k); d[j + 2] = clamp(d[j + 2] * k);
     });
   }
@@ -277,8 +274,7 @@ function toGray(d) {
 function levels(img, loPct = 0.005, hiPct = 0.995, gamma = 1) {
   const L = lumArray(img.data, img.width * img.height);
   let [a, b] = percentiles(L, loPct, hiPct);
-  // Sin contraste real (foto muy oscura o sin documento) no se estira más de ~2,5×: solo sacaría ruido
-  if (b - a < 100) { const c = (a + b) / 2; a = Math.max(0, c - 50); b = Math.min(255, a + 100); }
+  if (b - a < 40) { a = Math.max(0, a - 20); b = Math.min(255, b + 20); }
   const lut = new Uint8ClampedArray(256);
   for (let v = 0; v < 256; v++) { let x = (v - a) / (b - a); x = x < 0 ? 0 : x > 1 ? 1 : x; lut[v] = Math.round(Math.pow(x, gamma) * 255); }
   applyLut(img.data, lut);

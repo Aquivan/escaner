@@ -79,13 +79,15 @@ export async function render(root, params) {
   async function startCamera() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Este navegador no permite usar la cámara aquí (se necesita HTTPS).');
     const tries = [
+      // Si antes encontramos la cámara trasera con flash, se usa esa
+      ...(settings.cameraId ? [{ video: { deviceId: { exact: settings.cameraId }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false }] : []),
       { video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false },
       { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
       { video: true, audio: false },
     ];
     let err;
     for (const c of tries) {
-      try { stream = await navigator.mediaDevices.getUserMedia(c); break; } catch (e) { err = e; if (e.name === 'NotAllowedError') break; }
+      try { stream = await navigator.mediaDevices.getUserMedia(c); break; } catch (e) { err = e; if (e.name === 'NotAllowedError') break; if (c.video.deviceId) save('cameraId', null); }
     }
     if (!stream) throw err || new Error('No se pudo abrir la cámara');
     if (!running) { stream.getTracks().forEach(t => t.stop()); return; }
@@ -117,7 +119,43 @@ export async function render(root, params) {
     b.innerHTML = `${icon(m === 'off' ? 'flashOff' : 'flash')}<span>${FLASH_LABEL[m]}</span>`;
     b.classList.toggle('on', m === 'on' || (m === 'auto' && torchOn));
   }
+  // Muchos teléfonos (p. ej. Samsung) tienen varias cámaras traseras y el navegador puede abrir
+  // una sin flash (gran angular). Se prueban las traseras y se queda con la que tenga flash.
+  let searchingTorch = false, torchSearchDone = false;
+  async function findTorchCamera() {
+    if (searchingTorch || torchSearchDone || !navigator.mediaDevices?.enumerateDevices) return false;
+    searchingTorch = true; torchSearchDone = true;
+    setHint('Buscando la cámara con flash…');
+    try {
+      const current = track?.getSettings?.().deviceId;
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput' && d.deviceId !== current);
+      // Primero las traseras; las frontales al final
+      cams.sort((a, b) => (/front|frontal|user|selfie/i.test(a.label) ? 1 : 0) - (/front|frontal|user|selfie/i.test(b.label) ? 1 : 0));
+      for (const cam of cams.slice(0, 6)) {
+        if (/front|frontal|user|selfie/i.test(cam.label)) continue;
+        let st = null;
+        try {
+          if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+          st = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: cam.deviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
+          const tr = st.getVideoTracks()[0];
+          const caps = tr.getCapabilities ? tr.getCapabilities() : {};
+          if (caps.torch) {
+            stream = st; track = tr; video.srcObject = st; await video.play().catch(() => {});
+            torchSupported = true; torchOn = false;
+            await save('cameraId', cam.deviceId);
+            return true;
+          }
+          st.getTracks().forEach(t => t.stop());
+        } catch { if (st) st.getTracks().forEach(t => t.stop()); }
+      }
+      // Ninguna tiene flash controlable: se vuelve a abrir la cámara normal
+      if (!stream) await startCamera();
+      return false;
+    } finally { searchingTorch = false; setHint(''); }
+  }
+
   async function setTorch(on) {
+    if (on && !torchSupported && !torchSearchDone) await findTorchCamera();
     if (!torchSupported || !track || torchOn === on) return;
     try { await track.applyConstraints({ advanced: [{ torch: on }] }); torchOn = on; } catch { torchSupported = false; }
     drawFlashBtn();
@@ -141,7 +179,7 @@ export async function render(root, params) {
     const now = performance.now();
     if (b < 55) { if (!darkSince) darkSince = now; } else darkSince = 0;
     if (!torchOn && darkSince && now - darkSince > 900) {
-      if (torchSupported) setTorch(true); // queda encendida mientras escaneas
+      if (torchSupported || !torchSearchDone) setTorch(true); // queda encendida mientras escaneas
       else if (!photoFlash) setHint('Poca luz: acércate a una lámpara o enciende la luz');
     }
   }
@@ -192,7 +230,7 @@ export async function render(root, params) {
   };
   async function loop() {
     if (!running) return;
-    if (video.videoWidth && !reviewing && !busyCapture) {
+    if (video.videoWidth && !reviewing && !busyCapture && !searchingTorch) {
       let r = { quad: null };
       try { r = await detectSmart(video, { live: true }); } catch (e) { console.warn(e); }
       if (!running) return;
@@ -292,6 +330,9 @@ export async function render(root, params) {
     const page = blankPage(blob);
     page.corners = q;
     page.rotation = rotation;
+    // Sin documento detectado (una foto de cualquier cosa): se guarda natural, como hacen
+    // Adobe Scan o Google, en vez de aplicarle la mejora de documentos
+    if (!det.quad && F.isFullQuad(q) && mode === 'doc') page.filter = { preset: 'photo', shadows: false, brightness: 0, contrast: 0, sharpness: 15 };
     if (mode === 'id') page.filter = { ...page.filter, preset: page.filter.preset === 'bw' ? 'bw' : 'auto' };
     if (mode === 'board') page.filter = { preset: 'board', shadows: true, brightness: 0, contrast: 0, sharpness: 30 };
     if (mode === 'receipt') page.filter = { preset: 'gray', shadows: true, brightness: 0, contrast: 25, sharpness: 40 };
@@ -496,9 +537,10 @@ export async function render(root, params) {
     const m = order[(order.indexOf(settings.flashMode || 'auto') + 1) % 3];
     await save('flashMode', m);
     if (m === 'auto') { darkSince = 0; if (torchOn) await setTorch(false); }
-    applyFlash();
+    if (m === 'on') await setTorch(true); else applyFlash();
+    drawFlashBtn();
     const can = torchSupported || photoFlash;
-    toast(m === 'auto' ? 'Flash automático: se enciende con poca luz' : m === 'on' ? (can ? 'Flash encendido' : 'Este navegador no deja controlar el flash del teléfono') : 'Flash apagado');
+    toast(m === 'auto' ? 'Flash automático: se enciende con poca luz' : m === 'on' ? (torchOn ? 'Flash encendido' : can ? 'Se usará el flash al tomar la foto' : 'Ninguna cámara de este teléfono deja controlar el flash desde el navegador') : 'Flash apagado');
   };
   root.querySelectorAll('.cam-modes [data-m]').forEach(b => b.onclick = () => {
     if (idFront && b.dataset.m !== 'id') idFront = null;
