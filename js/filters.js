@@ -206,18 +206,21 @@ function backgroundGrid(chan, w, h) {
   return { g, gw, gh, block };
 }
 
-// Recorre píxeles con el valor de fondo interpolado bilinealmente
-function forEachBg(bg, w, h, fn) {
+// Fondo interpolado bilinealmente, fila a fila (rápido: sin funciones por píxel)
+function bgRows(bg, w, h, onRow) {
   const { g, gw, gh, block } = bg;
+  const xi0 = new Int32Array(w), xi1 = new Int32Array(w), xf = new Float32Array(w);
+  for (let x = 0; x < w; x++) {
+    let gx = (x + 0.5) / block - 0.5; if (gx < 0) gx = 0; if (gx > gw - 1) gx = gw - 1;
+    xi0[x] = gx | 0; xi1[x] = Math.min(gw - 1, xi0[x] + 1); xf[x] = gx - xi0[x];
+  }
+  const col = new Float32Array(gw), row = new Float32Array(w);
   for (let y = 0; y < h; y++) {
     let gy = (y + 0.5) / block - 0.5; if (gy < 0) gy = 0; if (gy > gh - 1) gy = gh - 1;
-    const y0 = gy | 0, y1 = Math.min(gh - 1, y0 + 1), fy = gy - y0;
-    for (let x = 0; x < w; x++) {
-      let gx = (x + 0.5) / block - 0.5; if (gx < 0) gx = 0; if (gx > gw - 1) gx = gw - 1;
-      const x0 = gx | 0, x1 = Math.min(gw - 1, x0 + 1), fx = gx - x0;
-      const v = (g[y0 * gw + x0] * (1 - fx) + g[y0 * gw + x1] * fx) * (1 - fy) + (g[y1 * gw + x0] * (1 - fx) + g[y1 * gw + x1] * fx) * fy;
-      fn(y * w + x, v);
-    }
+    const y0 = gy | 0, y1 = Math.min(gh - 1, y0 + 1), fy = gy - y0, o0 = y0 * gw, o1 = y1 * gw;
+    for (let i = 0; i < gw; i++) col[i] = g[o0 + i] * (1 - fy) + g[o1 + i] * fy;
+    for (let x = 0; x < w; x++) { const f = xf[x]; row[x] = col[xi0[x]] * (1 - f) + col[xi1[x]] * f; }
+    onRow(y, row);
   }
 }
 
@@ -226,19 +229,24 @@ function forEachBg(bg, w, h, fn) {
 export function removeShadows(img, perChannel = false) {
   const { data: d, width: w, height: h } = img;
   const n = w * h;
+  // (Uint8ClampedArray ya recorta y redondea al asignar)
   if (perChannel) {
+    const ch = new Uint8Array(n);
     for (let c = 0; c < 3; c++) {
-      const ch = new Uint8Array(n);
       for (let i = 0, j = c; i < n; i++, j += 4) ch[i] = d[j];
       const bg = backgroundGrid(ch, w, h);
-      forEachBg(bg, w, h, (i, v) => { const j = i * 4 + c; d[j] = clamp(d[j] * 248 / Math.max(v, 24)); });
+      bgRows(bg, w, h, (y, row) => {
+        for (let x = 0, j = y * w * 4 + c; x < w; x++, j += 4) { const v = row[x]; d[j] = d[j] * 248 / (v > 24 ? v : 24); }
+      });
     }
   } else {
     const L = lumArray(d, n);
     const bg = backgroundGrid(L, w, h);
-    forEachBg(bg, w, h, (i, v) => {
-      const k = 245 / Math.max(v, 24), j = i * 4;
-      d[j] = clamp(d[j] * k); d[j + 1] = clamp(d[j + 1] * k); d[j + 2] = clamp(d[j + 2] * k);
+    bgRows(bg, w, h, (y, row) => {
+      for (let x = 0, j = y * w * 4; x < w; x++, j += 4) {
+        const v = row[x], k = 245 / (v > 24 ? v : 24);
+        d[j] *= k; d[j + 1] *= k; d[j + 2] *= k;
+      }
     });
   }
   return img;
@@ -290,46 +298,40 @@ function brightnessContrast(d, br, ct) {
   applyLut(d, lut);
 }
 
-// Desenfoque de caja separable sobre RGB (radio r)
-function boxBlur(src, w, h, r) {
-  const tmp = new Uint8ClampedArray(src.length), out = new Uint8ClampedArray(src.length);
-  const div = 2 * r + 1;
+// Desenfoque de caja separable de un canal (radio r), con sumas acumuladas
+function boxBlur1(src, w, h, r) {
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h), div = 2 * r + 1;
   for (let y = 0; y < h; y++) {
-    for (let c = 0; c < 3; c++) {
-      let s = 0;
-      const row = y * w;
-      for (let k = -r; k <= r; k++) s += src[(row + Math.min(w - 1, Math.max(0, k))) * 4 + c];
-      for (let x = 0; x < w; x++) {
-        tmp[(row + x) * 4 + c] = s / div;
-        const xa = Math.min(w - 1, x + r + 1), xr = Math.max(0, x - r);
-        s += src[(row + xa) * 4 + c] - src[(row + xr) * 4 + c];
-      }
+    const o = y * w;
+    let s = src[o] * (r + 1);
+    for (let k = 1; k <= r; k++) s += src[o + Math.min(w - 1, k)];
+    for (let x = 0; x < w; x++) {
+      tmp[o + x] = s / div;
+      s += src[o + (x + r + 1 < w ? x + r + 1 : w - 1)] - src[o + (x - r > 0 ? x - r : 0)];
     }
   }
   for (let x = 0; x < w; x++) {
-    for (let c = 0; c < 3; c++) {
-      let s = 0;
-      for (let k = -r; k <= r; k++) s += tmp[(Math.min(h - 1, Math.max(0, k)) * w + x) * 4 + c];
-      for (let y = 0; y < h; y++) {
-        out[(y * w + x) * 4 + c] = s / div;
-        const ya = Math.min(h - 1, y + r + 1), yr = Math.max(0, y - r);
-        s += tmp[(ya * w + x) * 4 + c] - tmp[(yr * w + x) * 4 + c];
-      }
+    let s = tmp[x] * (r + 1);
+    for (let k = 1; k <= r; k++) s += tmp[Math.min(h - 1, k) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = s / div;
+      s += tmp[(y + r + 1 < h ? y + r + 1 : h - 1) * w + x] - tmp[(y - r > 0 ? y - r : 0) * w + x];
     }
   }
   return out;
 }
 
+// Máscara de enfoque sobre la luminancia (3× más rápida que por canal y sin halos de color)
 export function sharpen(img, amount) {
   if (amount <= 0) return;
   const { data: d, width: w, height: h } = img;
   const r = Math.max(1, Math.round(Math.max(w, h) / 1600));
-  const bl = boxBlur(d, w, h, r);
+  const L = lumArray(d, w * h);
+  const B = boxBlur1(L, w, h, r);
   const k = amount / 100 * 1.6;
-  for (let j = 0; j < d.length; j += 4) {
-    d[j] = clamp(d[j] + (d[j] - bl[j]) * k);
-    d[j + 1] = clamp(d[j + 1] + (d[j + 1] - bl[j + 1]) * k);
-    d[j + 2] = clamp(d[j + 2] + (d[j + 2] - bl[j + 2]) * k);
+  for (let i = 0, j = 0; i < L.length; i++, j += 4) {
+    const diff = (L[i] - B[i]) * k;
+    d[j] += diff; d[j + 1] += diff; d[j + 2] += diff;
   }
 }
 

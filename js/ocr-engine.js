@@ -168,6 +168,7 @@ async function recognizePaddle(page, onProgress) {
 
 // Reconoce el texto de una página. Devuelve el objeto ocr que se guarda en la página.
 export async function recognizePage(page, langs, onProgress, engine = settings.ocrEngine) {
+  try { const { ensureFullRes } = await import('./upgrader.js'); await ensureFullRes(page); } catch { /* se usa la que haya */ }
   if (engine !== 'tesseract' && paddleAvailable()) {
     try { return await recognizePaddle(page, onProgress); } catch (e) {
       console.warn('PaddleOCR falló; se usa Tesseract', e);

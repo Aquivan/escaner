@@ -78,6 +78,8 @@ async function start() {
   // Precarga en segundo plano la detección de bordes para que la cámara esté lista
   const idle = window.requestIdleCallback || (fn => setTimeout(fn, 1500));
   idle(() => loadOpenCV().catch(() => {}));
+  // Completa en segundo plano la alta resolución de páginas que quedaron pendientes
+  setTimeout(() => import('./upgrader.js').then(m => m.resumePending()).catch(() => {}), 4000);
 }
 
 start();

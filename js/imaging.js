@@ -124,12 +124,18 @@ export async function processPageCanvas(page, maxSide = MAX_SIDE) {
   return imgToCanvas(out);
 }
 
-// Recalcula y guarda en el objeto página: processed (JPEG), thumb y dimensiones
-export async function renderPage(page) {
-  const c = await processPageCanvas(page);
+// Como Adobe Scan: primero una versión rápida a resolución de pantalla (se puede revisar y
+// editar al instante) y la alta resolución se genera después en segundo plano (upgrader.js)
+// o al exportar. page.fullRes === false indica que falta la versión en alta.
+export const QUICK_SIDE = 1800;
+export async function renderPage(page, { full = false } = {}) {
+  const c = await processPageCanvas(page, full ? MAX_SIDE : QUICK_SIDE);
   page.processed = await canvasToBlob(c, 'image/jpeg', 0.92);
   page.width = c.width; page.height = c.height;
+  page.fullRes = full;
+  page.rev = (page.rev || 0) + 1;
   await updateThumb(page, c);
+  if (!full) import('./upgrader.js').then(m => m.scheduleUpgrade(page.id)).catch(() => {});
   return c;
 }
 

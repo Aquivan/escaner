@@ -94,6 +94,11 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     estT = setTimeout(async () => {
       const tok = ++estTok;
       try {
+        // Para estimar bien el peso, las páginas de muestra deben estar en alta resolución
+        const { ensureFullRes } = await import('./upgrader.js');
+        const n = pages.length, idxs = n <= 3 ? [...Array(n).keys()] : [0, Math.floor(n / 2), n - 1];
+        for (const i of idxs) await ensureFullRes(pages[i]);
+        if (tok !== estTok) return;
         const bytes = await estimateSize(pages, o, o.format);
         if (tok !== estTok) return;
         el.textContent = `≈ ${fmtBytes(bytes)}`;
@@ -110,6 +115,13 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     const pr = progress('Exportando…');
     try {
       let files;
+      // Páginas aún en versión rápida: se completa la alta resolución antes de exportar
+      if (o.format !== 'txt' && pages.some(p => p.fullRes === false)) {
+        pr.title('Preparando alta resolución…');
+        const { ensureAllFullRes } = await import('./upgrader.js');
+        await ensureAllFullRes(pages, f => pr.set(f));
+        pr.title('Exportando…');
+      }
       if (o.format === 'txt' || (o.format === 'pdf' && o.searchable)) {
         const missing = pages.filter(p => !p.ocr);
         for (let i = 0; i < missing.length; i++) {

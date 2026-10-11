@@ -106,33 +106,41 @@ export async function render(root, params) {
       applyFlash();
     };
     readCaps();
-    setTimeout(readCaps, 1200); // algunos teléfonos informan del flash un poco después
+    setTimeout(() => {
+      readCaps(); // algunos teléfonos informan del flash un poco después
+      if (flashMode() !== 'off' && !torchSupported && !photoFlash && !settings.torchChecked) findTorchCamera().then(applyFlash);
+    }, 1200);
   }
 
-  // ---------- Flash ----------
-  // Automático: enciende la luz si la escena está oscura. Encendido: siempre. Apagado: nunca.
-  let torchSupported = false, photoFlash = false, torchOn = false, darkSince = 0;
-  const FLASH_LABEL = { auto: 'Auto', on: 'Sí', off: 'No' };
+  // ---------- Flash (como el escáner de OneDrive) ----------
+  // Automático: el flash salta solo al tomar la foto y solo si está oscuro.
+  // Flash: salta siempre al tomar la foto. Linterna: luz encendida todo el rato. Apagado: nunca.
+  let torchSupported = false, photoFlash = false, torchOn = false, brightness = 128;
+  const FLASH_MODES = [
+    ['auto', 'Automático', 'Solo al tomar la foto y si hay poca luz', 'flash'],
+    ['on', 'Flash', 'Siempre al tomar la foto', 'flash'],
+    ['torch', 'Linterna', 'Luz encendida todo el tiempo', 'sun'],
+    ['off', 'Apagado', 'Nunca', 'flashOff'],
+  ];
+  const flashMode = () => (FLASH_MODES.some(m => m[0] === settings.flashMode) ? settings.flashMode : 'auto');
   function drawFlashBtn() {
-    const m = settings.flashMode || 'auto';
+    const m = FLASH_MODES.find(x => x[0] === flashMode());
     const b = $('#torch', root);
-    b.innerHTML = `${icon(m === 'off' ? 'flashOff' : 'flash')}<span>${FLASH_LABEL[m]}</span>`;
-    b.classList.toggle('on', m === 'on' || (m === 'auto' && torchOn));
+    b.innerHTML = `${icon(m[3])}<span>${m[0] === 'auto' ? 'Auto' : m[1]}</span>`;
+    b.classList.toggle('on', m[0] === 'on' || m[0] === 'torch');
   }
   // Muchos teléfonos (p. ej. Samsung) tienen varias cámaras traseras y el navegador puede abrir
   // una sin flash (gran angular). Se prueban las traseras y se queda con la que tenga flash.
   let searchingTorch = false, torchSearchDone = false;
   async function findTorchCamera() {
-    if (searchingTorch || torchSearchDone || !navigator.mediaDevices?.enumerateDevices) return false;
+    if (searchingTorch || torchSearchDone || settings.torchChecked || !navigator.mediaDevices?.enumerateDevices) return false;
     searchingTorch = true; torchSearchDone = true;
     setHint('Buscando la cámara con flash…');
     try {
       const current = track?.getSettings?.().deviceId;
-      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput' && d.deviceId !== current);
-      // Primero las traseras; las frontales al final
-      cams.sort((a, b) => (/front|frontal|user|selfie/i.test(a.label) ? 1 : 0) - (/front|frontal|user|selfie/i.test(b.label) ? 1 : 0));
+      const isFront = l => /front|frontal|user|selfie/i.test(l);
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput' && d.deviceId !== current && !isFront(d.label));
       for (const cam of cams.slice(0, 6)) {
-        if (/front|frontal|user|selfie/i.test(cam.label)) continue;
         let st = null;
         try {
           if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
@@ -148,24 +156,21 @@ export async function render(root, params) {
           st.getTracks().forEach(t => t.stop());
         } catch { if (st) st.getTracks().forEach(t => t.stop()); }
       }
-      // Ninguna tiene flash controlable: se vuelve a abrir la cámara normal
+      await save('torchChecked', true); // no volver a buscar cada vez
       if (!stream) await startCamera();
       return false;
     } finally { searchingTorch = false; setHint(''); }
   }
-
   async function setTorch(on) {
-    if (on && !torchSupported && !torchSearchDone) await findTorchCamera();
+    if (on && !torchSupported && !photoFlash) await findTorchCamera();
     if (!torchSupported || !track || torchOn === on) return;
     try { await track.applyConstraints({ advanced: [{ torch: on }] }); torchOn = on; } catch { torchSupported = false; }
-    drawFlashBtn();
   }
-  function applyFlash() {
-    const m = settings.flashMode || 'auto';
-    if (m === 'on') setTorch(true);
-    else if (m === 'off') setTorch(false);
-    drawFlashBtn();
-  }
+  // La luz solo queda encendida en modo Linterna
+  function applyFlash() { setTorch(flashMode() === 'torch'); drawFlashBtn(); }
+  const isDark = () => brightness < 70;
+  // ¿Disparar el flash en esta foto?
+  const wantFlash = () => flashMode() === 'on' || (flashMode() === 'auto' && isDark());
   // Brillo medio de la escena (0–255), muestreando la imagen reducida
   function sceneBrightness(c) {
     const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
@@ -174,14 +179,28 @@ export async function render(root, params) {
     return s / n;
   }
   function autoFlash(c) {
-    if ((settings.flashMode || 'auto') !== 'auto' || !c) return;
-    const b = sceneBrightness(c);
-    const now = performance.now();
-    if (b < 55) { if (!darkSince) darkSince = now; } else darkSince = 0;
-    if (!torchOn && darkSince && now - darkSince > 900) {
-      if (torchSupported || !torchSearchDone) setTorch(true); // queda encendida mientras escaneas
-      else if (!photoFlash) setHint('Poca luz: acércate a una lámpara o enciende la luz');
-    }
+    if (!c || torchOn) return; // con la luz encendida el brillo no indica la luz real de la escena
+    brightness = brightness * 0.7 + sceneBrightness(c) * 0.3;
+  }
+  function openFlashMenu() {
+    const cur = flashMode();
+    const m = h(`<div class="flash-menu" role="menu">${FLASH_MODES.map(([k, l, d, ic]) =>
+      `<button role="menuitemradio" aria-checked="${k === cur}" class="${k === cur ? 'on' : ''}" data-f="${k}">${icon(ic)}<span><b>${l}</b><small>${d}</small></span></button>`).join('')}</div>`);
+    const close = () => { m.remove(); document.removeEventListener('pointerdown', outside, true); };
+    const outside = e => { if (!m.contains(e.target) && !e.target.closest('#torch')) close(); };
+    m.addEventListener('click', async e => {
+      const k = e.target.closest('[data-f]')?.dataset.f;
+      if (!k) return;
+      close();
+      await save('flashMode', k);
+      if (k !== 'off' && !torchSupported && !photoFlash) await findTorchCamera();
+      applyFlash();
+      const can = torchSupported || photoFlash;
+      if (k !== 'off' && !can) toast('Ninguna cámara de este teléfono deja controlar el flash desde el navegador');
+      else toast(FLASH_MODES.find(x => x[0] === k)[1] + (k === 'auto' ? ': el flash salta solo con poca luz' : ''));
+    });
+    root.querySelector('.stage-view').append(m);
+    setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
   }
 
   function showCamError(e) {
@@ -244,6 +263,7 @@ export async function render(root, params) {
       const now = performance.now();
       if (!smooth) newPageReady = true; // se retiró o tapó la hoja: la siguiente será nueva
       if (!cvReady() && !mlReady()) setHint('Preparando detección de bordes…');
+      else if (!smooth && isDark() && flashMode() === 'off') { setHint('Poca luz: activa el flash o acércate a una lámpara'); stableSince = 0; }
       else if (!smooth) { setHint(mode === 'id' ? (idFront ? 'Enfoca el REVERSO del carnet' : 'Enfoca el ANVERSO del carnet') : mode === 'book' ? 'Enfoca el libro abierto (2 páginas)' : 'Buscando documento…'); stableSince = 0; }
       else {
         if (lastQuad && qdist(smooth, lastQuad) < 0.02) { if (!stableSince) stableSince = now; } else stableSince = 0;
@@ -254,7 +274,7 @@ export async function render(root, params) {
         $('#shutter', root).classList.toggle('armed', !!armed);
         if (armed && now - stableSince > 1100) { setHint(''); lastSig = signature(r.canvas, smooth); capture(true); }
         else if (!sharp) setHint('Imagen borrosa: sujeta firme o acerca un poco');
-        else if (!settings.autoCapture) setHint('Documento detectado · pulsa el botón');
+        else if (!settings.autoCapture) setHint(wantFlash() && (torchSupported || photoFlash) ? 'Documento detectado · se usará el flash' : 'Documento detectado · pulsa el botón');
         else if (!newPageReady) setHint(`✓ Página ${shots} lista · coloca la siguiente hoja`);
         else setHint(shots ? `No te muevas… (página ${shots + 1})` : 'No te muevas…');
       }
@@ -282,19 +302,29 @@ export async function render(root, params) {
   // ---------- Captura ----------
   let busyCapture = false;
   async function grabFrame() {
-    // ImageCapture.takePhoto da más resolución en Android; si falla usamos el fotograma del vídeo
-    if (window.ImageCapture && track && /Android/i.test(navigator.userAgent)) {
-      try {
-        const ic = new ImageCapture(track);
-        const m = settings.flashMode || 'auto';
-        const opts = photoFlash && !torchOn ? { fillLightMode: m === 'on' ? 'flash' : m === 'auto' ? 'auto' : 'off' } : {};
-        const blob = await Promise.race([ic.takePhoto(opts), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
-        if (blob && blob.size) return blob;
-      } catch { /* respaldo */ }
+    const flash = wantFlash();
+    let lit = false;
+    if (flash && torchSupported && !torchOn) {
+      // Flash con la linterna: se enciende, se deja que la cámara ajuste la exposición y se apaga
+      await setTorch(true); lit = torchOn;
+      if (lit) await new Promise(r => setTimeout(r, 650));
     }
-    const c = makeCanvas(video.videoWidth, video.videoHeight);
-    c.getContext('2d').drawImage(video, 0, 0);
-    return canvasToBlob(c, 'image/jpeg', 0.93);
+    try {
+      // ImageCapture.takePhoto da más resolución en Android; si falla usamos el fotograma del vídeo
+      if (window.ImageCapture && track && /Android/i.test(navigator.userAgent)) {
+        try {
+          const ic = new ImageCapture(track);
+          const opts = photoFlash && !torchOn ? { fillLightMode: flash ? 'flash' : 'off' } : {};
+          const blob = await Promise.race([ic.takePhoto(opts), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
+          if (blob && blob.size) return blob;
+        } catch { /* respaldo */ }
+      }
+      const c = makeCanvas(video.videoWidth, video.videoHeight);
+      c.getContext('2d').drawImage(video, 0, 0);
+      return await canvasToBlob(c, 'image/jpeg', 0.93);
+    } finally {
+      if (lit && flashMode() !== 'torch') await setTorch(false);
+    }
   }
 
   async function capture(auto = false) {
@@ -532,16 +562,7 @@ export async function render(root, params) {
     $('#shutter', root).classList.remove('armed');
     toast(settings.autoCapture ? 'Automático: captura sola cada hoja, una tras otra' : 'Manual: pulsa el botón para capturar');
   };
-  $('#torch', root).onclick = async () => {
-    const order = ['auto', 'on', 'off'];
-    const m = order[(order.indexOf(settings.flashMode || 'auto') + 1) % 3];
-    await save('flashMode', m);
-    if (m === 'auto') { darkSince = 0; if (torchOn) await setTorch(false); }
-    if (m === 'on') await setTorch(true); else applyFlash();
-    drawFlashBtn();
-    const can = torchSupported || photoFlash;
-    toast(m === 'auto' ? 'Flash automático: se enciende con poca luz' : m === 'on' ? (torchOn ? 'Flash encendido' : can ? 'Se usará el flash al tomar la foto' : 'Ninguna cámara de este teléfono deja controlar el flash desde el navegador') : 'Flash apagado');
-  };
+  $('#torch', root).onclick = () => { if ($('.flash-menu', root)) $('.flash-menu', root).remove(); else openFlashMenu(); };
   root.querySelectorAll('.cam-modes [data-m]').forEach(b => b.onclick = () => {
     if (idFront && b.dataset.m !== 'id') idFront = null;
     mode = b.dataset.m; updateMode();
@@ -551,11 +572,13 @@ export async function render(root, params) {
 
   loadOpenCV().catch(() => {});
   loadMl();
+  import('../upgrader.js').then(m => m.pauseUpgrades(true)).catch(() => {});
   try { await startCamera(); setHint(''); loop(); } catch (e) { console.warn(e); showCamError(e); }
 
   return () => {
     running = false;
     window.removeEventListener('keydown', onKey);
+    import('../upgrader.js').then(m => m.pauseUpgrades(false)).catch(() => {});
     if (torchOn && track) track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
     if (stream) stream.getTracks().forEach(t => t.stop());
   };

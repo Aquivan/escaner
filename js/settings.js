@@ -5,7 +5,8 @@ export const settings = {
   theme: 'auto',            // auto | light | dark
   defaultFilter: { preset: 'auto' },
   autoCapture: true,
-  flashMode: 'auto',        // auto | on | off
+  flashMode: 'auto',        // auto | on | torch | off
+  torchChecked: false,      // ya se buscó una cámara con flash y no había
   cameraId: null,           // cámara trasera con flash (se detecta sola)
   reviewCapture: false,     // abrir recorte tras cada captura
   detectOnImport: true,
