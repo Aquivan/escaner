@@ -2,12 +2,14 @@
 import * as db from '../db.js';
 import { icon } from '../icons.js';
 import { h, $, toast, pickFiles, progress, embedded } from '../ui.js';
-import { makeCanvas, canvasToBlob, decodeBlob, renderPage, blobUrl } from '../imaging.js';
+import { makeCanvas, canvasToBlob, decodeBlob, renderPage, blobUrl, fitCanvas, canvasToImg, imgToCanvas } from '../imaging.js';
 import { detectQuad, detectSmart, sharpness, BLUR_THRESHOLD, mlReady, loadMl, FULL } from '../detect.js';
 import { loadOpenCV, cvReady } from '../loader.js';
 import { blankPage, addPages, composeIdCard, importFiles, removePagesFromDoc } from '../pages.js';
 import { createCropper } from '../cropper.js';
-import { homography } from '../filters.js';
+import * as F from '../filters.js';
+const { homography } = F;
+const filtersRotate = F.rotate;
 import { settings, save } from '../settings.js';
 import { go, back } from '../nav.js';
 
@@ -18,8 +20,9 @@ export async function render(root, params) {
   let insertAt = params.insertAt ?? null;
   let replaceId = params.replaceId || null; // repetir una página concreta
   let createdHere = false, firstIdx = null;
-  let count = 0;
-  let stream = null, track = null, torch = false;
+  let count = 0;          // páginas ya procesadas y guardadas
+  let base = 0, queued = 0, lastIdx = null, idFrontPending = false; // páginas que ya tenía el documento / capturadas en esta sesión
+  let stream = null, track = null;
   let running = true;
   let idFront = null; // página anverso pendiente en modo carnet
   let queue = Promise.resolve();
@@ -31,7 +34,7 @@ export async function render(root, params) {
         <button class="icon-btn" id="close" aria-label="Cerrar">${icon('x')}</button>
         <h1 id="title"></h1>
         <button class="cap-toggle" id="capMode" aria-label="Modo de captura"></button>
-        <button class="icon-btn" id="torch" aria-label="Flash" hidden>${icon('flashOff')}</button>
+        <button class="flash-btn" id="torch" aria-label="Flash"></button>
         <button class="icon-btn" id="gallery" aria-label="Importar de la galería">${icon('image')}</button>
       </header>
       <div class="stage" id="stage">
@@ -89,11 +92,58 @@ export async function render(root, params) {
     video.srcObject = stream;
     await video.play().catch(() => {});
     track = stream.getVideoTracks()[0];
-    try {
-      const caps = track.getCapabilities ? track.getCapabilities() : {};
-      if (caps.torch) $('#torch', root).hidden = false;
-      if (caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
-    } catch { /* */ }
+    const readCaps = () => {
+      try {
+        const caps = track.getCapabilities ? track.getCapabilities() : {};
+        torchSupported = !!caps.torch;
+        if (caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+      } catch { /* */ }
+      if (window.ImageCapture) {
+        try { new ImageCapture(track).getPhotoCapabilities().then(pc => { photoFlash = (pc.fillLightMode || []).includes('flash'); }).catch(() => {}); } catch { /* */ }
+      }
+      applyFlash();
+    };
+    readCaps();
+    setTimeout(readCaps, 1200); // algunos teléfonos informan del flash un poco después
+  }
+
+  // ---------- Flash ----------
+  // Automático: enciende la luz si la escena está oscura. Encendido: siempre. Apagado: nunca.
+  let torchSupported = false, photoFlash = false, torchOn = false, darkSince = 0;
+  const FLASH_LABEL = { auto: 'Auto', on: 'Sí', off: 'No' };
+  function drawFlashBtn() {
+    const m = settings.flashMode || 'auto';
+    const b = $('#torch', root);
+    b.innerHTML = `${icon(m === 'off' ? 'flashOff' : 'flash')}<span>${FLASH_LABEL[m]}</span>`;
+    b.classList.toggle('on', m === 'on' || (m === 'auto' && torchOn));
+  }
+  async function setTorch(on) {
+    if (!torchSupported || !track || torchOn === on) return;
+    try { await track.applyConstraints({ advanced: [{ torch: on }] }); torchOn = on; } catch { torchSupported = false; }
+    drawFlashBtn();
+  }
+  function applyFlash() {
+    const m = settings.flashMode || 'auto';
+    if (m === 'on') setTorch(true);
+    else if (m === 'off') setTorch(false);
+    drawFlashBtn();
+  }
+  // Brillo medio de la escena (0–255), muestreando la imagen reducida
+  function sceneBrightness(c) {
+    const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+    let s = 0, n = 0;
+    for (let i = 0; i < d.length; i += 32) { s += d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11; n++; }
+    return s / n;
+  }
+  function autoFlash(c) {
+    if ((settings.flashMode || 'auto') !== 'auto' || !c) return;
+    const b = sceneBrightness(c);
+    const now = performance.now();
+    if (b < 55) { if (!darkSince) darkSince = now; } else darkSince = 0;
+    if (!torchOn && darkSince && now - darkSince > 900) {
+      if (torchSupported) setTorch(true); // queda encendida mientras escaneas
+      else if (!photoFlash) setHint('Poca luz: acércate a una lámpara o enciende la luz');
+    }
   }
 
   function showCamError(e) {
@@ -150,6 +200,7 @@ export async function render(root, params) {
       if (q) smooth = smooth && qdist(q, smooth) < 0.12 ? smooth.map((p, i) => [p[0] * 0.55 + q[i][0] * 0.45, p[1] * 0.55 + q[i][1] * 0.45]) : q;
       else smooth = null;
       sharpNow = r.canvas ? sharpness(r.canvas, smooth) : 0;
+      autoFlash(r.canvas);
       const sharp = sharpNow >= BLUR_THRESHOLD;
       drawOverlay(smooth, sharp);
       const now = performance.now();
@@ -197,7 +248,9 @@ export async function render(root, params) {
     if (window.ImageCapture && track && /Android/i.test(navigator.userAgent)) {
       try {
         const ic = new ImageCapture(track);
-        const blob = await Promise.race([ic.takePhoto(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3500))]);
+        const m = settings.flashMode || 'auto';
+        const opts = photoFlash && !torchOn ? { fillLightMode: m === 'on' ? 'flash' : m === 'auto' ? 'auto' : 'off' } : {};
+        const blob = await Promise.race([ic.takePhoto(opts), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
         if (blob && blob.size) return blob;
       } catch { /* respaldo */ }
     }
@@ -249,9 +302,28 @@ export async function render(root, params) {
       p2.corners = right; p2.rotation = rotation; p2.filter = { ...page.filter };
       page.corners = left;
       enqueue(page); enqueue(p2);
+      queued += 2; setCounter(); quickThumb(preview, right, rotation);
       return;
     }
     enqueue(page);
+    if (mode !== 'id' || idFrontPending) { queued++; setCounter(); quickThumb(preview, q, rotation); if (settings.autoCapture && !replaceId) toast(`Página ${base + queued} capturada`, 'ok'); }
+    if (mode === 'id') idFrontPending = !idFrontPending;
+  }
+
+  // Contador = páginas que ya tenía el documento + capturadas ahora (aunque se sigan procesando)
+  function setCounter() {
+    const total = base + queued;
+    $('#thumb', root).hidden = !total;
+    $('#cnt', root).textContent = total;
+    $('#done', root).hidden = !total;
+  }
+  // Miniatura al instante (recorte rápido de la vista previa) mientras se procesa en segundo plano
+  function quickThumb(preview, q, rotation = 0) {
+    try {
+      const small = fitCanvas(preview, 420);
+      const img = filtersRotate(F.warp(canvasToImg(small), q || FULL, 300), rotation);
+      $('#thumb', root).style.backgroundImage = `url(${imgToCanvas(img).toDataURL('image/jpeg', 0.7)})`;
+    } catch (e) { console.warn(e); }
   }
 
   // Divide el cuadrilátero de un libro abierto por su línea central real (en perspectiva)
@@ -293,13 +365,11 @@ export async function render(root, params) {
     }
     await addPages(doc, [page], at);
     if (firstIdx == null) firstIdx = at;
+    lastIdx = at;
     if (insertAt != null) insertAt++;
     count++;
-    $('#thumb', root).hidden = false;
+    if (mode === 'id') { queued = Math.max(queued, count); setCounter(); }
     $('#thumb', root).style.backgroundImage = `url(${blobUrl(page.thumb)})`;
-    $('#cnt', root).textContent = count;
-    $('#done', root).hidden = false;
-    if (settings.autoCapture && mode !== 'id') toast(`Página ${count} capturada · coloca la siguiente`, 'ok');
   }
 
   // Revisión de esquinas tras la foto, con menú lateral (girar, cambiar por otra de la galería,
@@ -369,23 +439,27 @@ export async function render(root, params) {
         doc.pageIds.splice(insertAt, 0, ...ids); insertAt += ids.length;
         await db.putDoc(doc);
       }
-      count += pages.length;
+      count += pages.length; queued += pages.length;
+      if (pages.length) lastIdx = (insertAt != null ? insertAt : doc.pageIds.length) - 1;
       pr.close();
       if (pages.length) {
-        $('#thumb', root).hidden = false; $('#thumb', root).style.backgroundImage = `url(${blobUrl(pages[pages.length - 1].thumb)})`;
-        $('#cnt', root).textContent = count; $('#done', root).hidden = false;
+        $('#thumb', root).style.backgroundImage = `url(${blobUrl(pages[pages.length - 1].thumb)})`;
+        setCounter();
         toast(`${pages.length} página(s) añadidas`, 'ok');
       }
     } catch (e) { pr.close(); toast(e.message, 'error'); }
   }
 
   async function finish() {
-    const pr = count || idFront ? progress('Terminando…') : null;
+    const pr = queued > count || idFront ? progress('Terminando de procesar…') : null;
     await queue;
     pr && pr.close();
     if (idFront) toast('Falta el reverso del carnet; se descartó el anverso');
-    if (params.returnBack || params.replaceId) back();
-    else if (docId && count) go('editor', { docId, index: firstIdx ?? 0, fromScan: true, newDoc: createdHere }, { replace: true });
+    // La revisión se abre en la última página capturada
+    if (params.returnBack || params.replaceId) {
+      try { if (lastIdx != null) sessionStorage.setItem(`editorJump:${docId}`, String(lastIdx)); } catch { /* */ }
+      back();
+    } else if (docId && count) go('editor', { docId, index: lastIdx ?? firstIdx ?? 0, fromScan: true, newDoc: createdHere }, { replace: true });
     else back();
   }
 
@@ -401,15 +475,30 @@ export async function render(root, params) {
     b.classList.toggle('on', !!settings.autoCapture);
   };
   updateCapMode();
+  drawFlashBtn();
+  if (docId) {
+    const d0 = await db.getDoc(docId);
+    if (d0 && d0.pageIds.length) {
+      base = d0.pageIds.length - (params.replaceId ? 1 : 0);
+      const lp = await db.getPage(d0.pageIds[d0.pageIds.length - 1]);
+      if (lp?.thumb) $('#thumb', root).style.backgroundImage = `url(${blobUrl(lp.thumb)})`;
+      setCounter();
+    }
+  }
   $('#capMode', root).onclick = async () => {
     await save('autoCapture', !settings.autoCapture);
     updateCapMode();
     $('#shutter', root).classList.remove('armed');
     toast(settings.autoCapture ? 'Automático: captura sola cada hoja, una tras otra' : 'Manual: pulsa el botón para capturar');
   };
-  $('#torch', root).onclick = async e => {
-    torch = !torch;
-    try { await track.applyConstraints({ advanced: [{ torch }] }); e.currentTarget.innerHTML = icon(torch ? 'flash' : 'flashOff'); e.currentTarget.classList.toggle('on', torch); } catch { toast('Flash no disponible'); }
+  $('#torch', root).onclick = async () => {
+    const order = ['auto', 'on', 'off'];
+    const m = order[(order.indexOf(settings.flashMode || 'auto') + 1) % 3];
+    await save('flashMode', m);
+    if (m === 'auto') { darkSince = 0; if (torchOn) await setTorch(false); }
+    applyFlash();
+    const can = torchSupported || photoFlash;
+    toast(m === 'auto' ? 'Flash automático: se enciende con poca luz' : m === 'on' ? (can ? 'Flash encendido' : 'Este navegador no deja controlar el flash del teléfono') : 'Flash apagado');
   };
   root.querySelectorAll('.cam-modes [data-m]').forEach(b => b.onclick = () => {
     if (idFront && b.dataset.m !== 'id') idFront = null;
@@ -425,6 +514,7 @@ export async function render(root, params) {
   return () => {
     running = false;
     window.removeEventListener('keydown', onKey);
+    if (torchOn && track) track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
     if (stream) stream.getTracks().forEach(t => t.stop());
   };
 }

@@ -5,6 +5,7 @@ export const settings = {
   theme: 'auto',            // auto | light | dark
   defaultFilter: { preset: 'auto' },
   autoCapture: true,
+  flashMode: 'auto',        // auto | on | off
   reviewCapture: false,     // abrir recorte tras cada captura
   detectOnImport: true,
   ocrLangs: ['spa'],

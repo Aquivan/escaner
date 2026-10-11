@@ -22,6 +22,11 @@ export async function render(root, params) {
   let doc = await db.getDoc(docId);
   if (!doc || !doc.pageIds.length) { back(); return; }
   let idx = Math.min(params.index || 0, doc.pageIds.length - 1);
+  // Al volver de la cámara se abre la última página capturada
+  try {
+    const j = sessionStorage.getItem(`editorJump:${docId}`);
+    if (j != null) { sessionStorage.removeItem(`editorJump:${docId}`); idx = Math.min(+j, doc.pageIds.length - 1); }
+  } catch { /* */ }
   let page, base, filter, rotation, dirty = false, panel = null, renderTok = 0;
 
   root.innerHTML = `

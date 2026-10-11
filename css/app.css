@@ -409,3 +409,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .cap-toggle .ic { width: 18px; height: 18px; }
 .cap-toggle.on { background: #5eead4; border-color: #5eead4; color: #042f2e; }
 .cam-modes button { padding: 6px 10px; font-size: 12.5px; }
+.flash-btn { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 10px; border-radius: 18px; border: 1.5px solid #64748b; background: transparent; color: #e2e8f0; font-weight: 700; font-size: 12.5px; cursor: pointer; }
+.flash-btn .ic { width: 18px; height: 18px; }
+.flash-btn.on { background: #fde047; border-color: #fde047; color: #1c1917; }
