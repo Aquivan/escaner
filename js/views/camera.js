@@ -161,10 +161,18 @@ export async function render(root, params) {
       return false;
     } finally { searchingTorch = false; setHint(''); }
   }
+  const realTorch = () => { try { return !!track?.getSettings?.().torch; } catch { return torchOn; } };
   async function setTorch(on) {
     if (on && !torchSupported && !photoFlash) await findTorchCamera();
-    if (!torchSupported || !track || torchOn === on) return;
-    try { await track.applyConstraints({ advanced: [{ torch: on }] }); torchOn = on; } catch { torchSupported = false; }
+    if (!torchSupported || !track) return;
+    if (torchOn === on && realTorch() === on) return;
+    for (let i = 0; i < 4; i++) {
+      try { await track.applyConstraints({ advanced: [{ torch: on }] }); } catch { if (on) { torchSupported = false; return; } }
+      torchOn = on;
+      // Algunos teléfonos ignoran la primera orden de apagar: se comprueba y se insiste
+      if (realTorch() === on || on) return;
+      await new Promise(r => setTimeout(r, 150 + i * 150));
+    }
   }
   // La luz solo queda encendida en modo Linterna
   function applyFlash() { setTorch(flashMode() === 'torch'); drawFlashBtn(); }
@@ -182,26 +190,7 @@ export async function render(root, params) {
     if (!c || torchOn) return; // con la luz encendida el brillo no indica la luz real de la escena
     brightness = brightness * 0.7 + sceneBrightness(c) * 0.3;
   }
-  function openFlashMenu() {
-    const cur = flashMode();
-    const m = h(`<div class="flash-menu" role="menu">${FLASH_MODES.map(([k, l, d, ic]) =>
-      `<button role="menuitemradio" aria-checked="${k === cur}" class="${k === cur ? 'on' : ''}" data-f="${k}">${icon(ic)}<span><b>${l}</b><small>${d}</small></span></button>`).join('')}</div>`);
-    const close = () => { m.remove(); document.removeEventListener('pointerdown', outside, true); };
-    const outside = e => { if (!m.contains(e.target) && !e.target.closest('#torch')) close(); };
-    m.addEventListener('click', async e => {
-      const k = e.target.closest('[data-f]')?.dataset.f;
-      if (!k) return;
-      close();
-      await save('flashMode', k);
-      if (k !== 'off' && !torchSupported && !photoFlash) await findTorchCamera();
-      applyFlash();
-      const can = torchSupported || photoFlash;
-      if (k !== 'off' && !can) toast('Ninguna cámara de este teléfono deja controlar el flash desde el navegador');
-      else toast(FLASH_MODES.find(x => x[0] === k)[1] + (k === 'auto' ? ': el flash salta solo con poca luz' : ''));
-    });
-    root.querySelector('.stage-view').append(m);
-    setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
-  }
+
 
   function showCamError(e) {
     const msg = embedded ? 'En esta versión la foto se toma con la cámara del teléfono. Pulsa el botón, haz la foto y la app detecta los bordes sola.' : e?.name === 'NotAllowedError' ? 'Permiso de cámara denegado. Actívalo en los ajustes del navegador o usa la cámara del sistema.' : (e?.message || 'No se pudo abrir la cámara.');
@@ -258,6 +247,7 @@ export async function render(root, params) {
       else smooth = null;
       sharpNow = r.canvas ? sharpness(r.canvas, smooth) : 0;
       autoFlash(r.canvas);
+      if (flashMode() !== 'torch' && !busyCapture && (torchOn || realTorch())) { torchOn = true; setTorch(false); }
       const sharp = sharpNow >= BLUR_THRESHOLD;
       drawOverlay(smooth, sharp);
       const now = performance.now();
@@ -305,16 +295,17 @@ export async function render(root, params) {
     const flash = wantFlash();
     let lit = false;
     if (flash && torchSupported && !torchOn) {
-      // Flash con la linterna: se enciende, se deja que la cámara ajuste la exposición y se apaga
+      // Flash con la luz del teléfono: se enciende, la cámara ajusta la exposición, foto y se apaga
       await setTorch(true); lit = torchOn;
       if (lit) await new Promise(r => setTimeout(r, 650));
     }
     try {
-      // ImageCapture.takePhoto da más resolución en Android; si falla usamos el fotograma del vídeo
-      if (window.ImageCapture && track && /Android/i.test(navigator.userAgent)) {
+      // takePhoto da más resolución en Android, pero con la luz encendida reinicia la cámara
+      // y la luz queda pegada: en ese caso se usa el fotograma del vídeo
+      if (!lit && !torchOn && window.ImageCapture && track && /Android/i.test(navigator.userAgent)) {
         try {
           const ic = new ImageCapture(track);
-          const opts = photoFlash && !torchOn ? { fillLightMode: flash ? 'flash' : 'off' } : {};
+          const opts = photoFlash ? { fillLightMode: flash ? 'flash' : 'off' } : {};
           const blob = await Promise.race([ic.takePhoto(opts), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
           if (blob && blob.size) return blob;
         } catch { /* respaldo */ }
@@ -562,7 +553,16 @@ export async function render(root, params) {
     $('#shutter', root).classList.remove('armed');
     toast(settings.autoCapture ? 'Automático: captura sola cada hoja, una tras otra' : 'Manual: pulsa el botón para capturar');
   };
-  $('#torch', root).onclick = () => { if ($('.flash-menu', root)) $('.flash-menu', root).remove(); else openFlashMenu(); };
+  $('#torch', root).onclick = async () => {
+    const order = FLASH_MODES.map(m => m[0]);
+    const k = order[(order.indexOf(flashMode()) + 1) % order.length];
+    await save('flashMode', k);
+    if (k !== 'off' && !torchSupported && !photoFlash) await findTorchCamera();
+    applyFlash();
+    const m = FLASH_MODES.find(x => x[0] === k);
+    if (k !== 'off' && !torchSupported && !photoFlash) toast(`${m[1]} · este teléfono no deja controlar el flash desde el navegador`);
+    else toast(`${m[1]}: ${m[2].toLowerCase()}`);
+  };
   root.querySelectorAll('.cam-modes [data-m]').forEach(b => b.onclick = () => {
     if (idFront && b.dataset.m !== 'id') idFront = null;
     mode = b.dataset.m; updateMode();

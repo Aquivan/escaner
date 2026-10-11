@@ -412,9 +412,3 @@ input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .flash-btn { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 10px; border-radius: 18px; border: 1.5px solid #64748b; background: transparent; color: #e2e8f0; font-weight: 700; font-size: 12.5px; cursor: pointer; }
 .flash-btn .ic { width: 18px; height: 18px; }
 .flash-btn.on { background: #fde047; border-color: #fde047; color: #1c1917; }
-.flash-menu { position: absolute; top: calc(58px + var(--safe-t)); right: 10px; z-index: 20; min-width: 250px; padding: 6px; border-radius: 16px; background: rgba(20, 24, 32, .96); box-shadow: 0 10px 30px rgba(0,0,0,.5); display: grid; gap: 2px; }
-.flash-menu button { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 0; border-radius: 12px; background: transparent; color: #e2e8f0; text-align: left; cursor: pointer; }
-.flash-menu button span { display: grid; }
-.flash-menu button small { color: #94a3b8; font-size: 12px; }
-.flash-menu button.on { background: rgba(253, 224, 71, .14); color: #fde047; }
-.flash-menu button:hover { background: rgba(255,255,255,.08); }
