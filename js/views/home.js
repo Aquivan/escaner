@@ -210,6 +210,7 @@ async function openSettings(onChange) {
       <button class="btn small" id="bkRestore">${icon('upload')}Restaurar copia</button>
     </div>
     <p class="small muted" style="margin-top:12px">${icon('info')} Tus documentos se guardan solo en este dispositivo${est ? ` · Espacio usado: ${fmtBytes(est.usage)}` : ''}.</p>
+    <div class="row" style="margin-top:8px"><span class="small muted">Versión ${window.APP_VERSION || ''}</span><span class="spacer"></span><button class="btn small" id="upd">Buscar actualización</button></div>
   </div>`);
   const s = sheet({ title: 'Ajustes', body });
   $$('#theme .chip', body).forEach(b => b.onclick = async () => {
@@ -240,6 +241,16 @@ async function openSettings(onChange) {
       pr.close(); s.close();
       toast(`Restaurados ${r.docs} documentos (${r.pages} páginas)`, 'ok');
     } catch (e) { pr.close(); toast(e.message, 'error'); }
+  };
+  $('#upd', body).onclick = async () => {
+    // Fuerza la versión más reciente: borra la copia de la app (no tus documentos) y recarga
+    progress('Buscando actualización…');
+    try {
+      const regs = await navigator.serviceWorker?.getRegistrations?.() || [];
+      for (const r of regs) await r.update().catch(() => {});
+      for (const k of await caches.keys()) if (k.startsWith('escaner-app')) await caches.delete(k);
+    } catch { /* */ }
+    location.reload();
   };
   await s.done;
   onChange && onChange();

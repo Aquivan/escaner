@@ -1,6 +1,6 @@
 // Service worker: la app funciona sin conexión y las librerías pesadas
 // (OpenCV, OCR, PDF) se descargan una sola vez.
-const VERSION = 'v10';
+const VERSION = 'v11';
 const APP = `escaner-app-${VERSION}`;
 const LIBS = 'escaner-libs-v1'; // librerías versionadas: no cambian entre versiones de la app
 
@@ -12,6 +12,8 @@ const SHELL = [
   'js/views/home.js', 'js/views/camera.js', 'js/views/crop.js', 'js/views/editor.js', 'js/views/doc.js',
   'js/views/annotate.js', 'js/views/ocr.js', 'js/views/pdftools.js',
 ];
+
+self.addEventListener('message', e => { if (e.data === 'skipWaiting') self.skipWaiting(); });
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(APP).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -42,11 +44,12 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (url.origin !== location.origin) return;
-  // App: red primero (para recibir actualizaciones) con respaldo de caché sin conexión
+  // App: red primero, sin la copia HTTP del navegador (para recibir actualizaciones al momento),
+  // con respaldo de caché sin conexión
   e.respondWith((async () => {
     const cache = await caches.open(APP);
     try {
-      const res = await fetch(req);
+      const res = await fetch(req, { cache: 'no-cache' });
       if (res.ok) cache.put(req, res.clone());
       return res;
     } catch {

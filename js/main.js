@@ -3,6 +3,9 @@ import { loadSettings } from './settings.js';
 import { loadOpenCV, onStatus } from './loader.js';
 import { toast, h, $ } from './ui.js';
 
+export const APP_VERSION = '11';
+window.APP_VERSION = APP_VERSION;
+
 const views = {
   home: () => import('./views/home.js'),
   camera: () => import('./views/camera.js'),
@@ -28,6 +31,7 @@ async function render(state) {
     root.innerHTML = '';
     root.dataset.view = name;
     window.scrollTo(0, 0);
+    if (window.__pendingReload && name === 'home') { location.reload(); return; }
     cleanup = (await mod.render(root, state.params || {})) || null;
   } catch (e) {
     if (seq !== renderSeq) return; // la vista ya cambió: el error es de una pantalla abandonada
@@ -72,7 +76,22 @@ async function start() {
   await render(initial);
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+    // Actualizaciones: se busca versión nueva al abrir y al volver a la app; cuando llega,
+    // la página se recarga sola (salvo si estás en la cámara o editando)
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+      const check = () => reg.update().catch(() => {});
+      check();
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+      setInterval(check, 30 * 60 * 1000);
+    }).catch(e => console.warn('SW', e));
+    let reloading = false;
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      const busy = ['camera', 'annotate', 'crop'].includes(document.getElementById('app').dataset.view);
+      if (busy) { toast('Hay una versión nueva: se aplicará al volver al inicio'); window.__pendingReload = true; return; }
+      reloading = true; location.reload();
+    });
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   // Precarga en segundo plano la detección de bordes para que la cámara esté lista
