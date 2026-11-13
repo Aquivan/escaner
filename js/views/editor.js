@@ -43,7 +43,9 @@ export async function render(root, params) {
           <button data-s="crop" title="Recortar y rotar"><span>Recortar</span>${icon('crop')}</button>
           <button data-s="pen" title="Lápiz"><span>Lápiz</span>${icon('pen')}</button>
           <button data-s="text" title="Añadir texto"><span>Texto</span>${icon('type')}</button>
+          <button data-s="highlight" class="extra" title="Resaltar"><span>Resaltar</span>${icon('highlighter')}</button>
           <button data-s="sign" class="extra" title="Firmar"><span>Firma</span>${icon('signature')}</button>
+          <button data-s="clean" class="extra" title="Borrar manchas o marcas"><span>Borrador</span>${icon('eraser')}</button>
           <button data-s="rotate" class="extra" title="Girar"><span>Girar</span>${icon('rotateR')}</button>
           <button data-s="retake" class="extra" id="retake" title="Volver a escanear"><span>Repetir</span>${icon('camera')}</button>
           <button data-s="del" class="extra" id="del" title="Eliminar"><span>Eliminar</span>${icon('trash')}</button>
@@ -56,8 +58,6 @@ export async function render(root, params) {
         <span class="tool-sep"></span>
         <button data-a="filters">${icon('drop')}Filtros</button>
         <button data-a="adjust">${icon('sliders')}Ajustes</button>
-        <button data-a="clean">${icon('eraser')}Limpiar</button>
-        <button data-a="annotate">${icon('highlighter')}Resaltar y dibujar</button>
         <button data-a="ocr">${icon('ocr')}Extraer texto</button>
       </div>
       <div class="thumb-strip" id="strip"></div>
@@ -145,24 +145,10 @@ export async function render(root, params) {
     if (el) el.src = blobUrl(page.thumb);
   }
 
-  function addMenu() {
-    menu([
-      { icon: 'camera', label: 'Escanear más páginas', onClick: async () => { await persist(); go('camera', { docId, insertAt: doc.pageIds.length, returnBack: true }); } },
-      { icon: 'idcard', label: 'Escanear carnet (2 caras)', onClick: async () => { await persist(); go('camera', { docId, mode: 'id', insertAt: doc.pageIds.length, returnBack: true }); } },
-      { icon: 'upload', label: 'Importar fotos o PDF', onClick: async () => {
-        await persist();
-        const { pickFiles } = await import('../ui.js');
-        const { importFiles } = await import('../pages.js');
-        const files = await pickFiles({ accept: 'image/*,application/pdf' });
-        if (!files.length) return;
-        const pr = progress('Importando…');
-        try { await importFiles(doc, files, pr); } catch (e) { toast(e.message, 'error'); }
-        pr.close();
-        doc = await db.getDoc(docId);
-        await drawStrip();
-        load(doc.pageIds.length - 1);
-      } },
-    ]);
+  // "+": directo a la cámara (dentro están la galería y el modo carnet)
+  async function addMenu() {
+    await persist();
+    go('camera', { docId, insertAt: doc.pageIds.length, returnBack: true });
   }
 
   // ---------- Paneles ----------
@@ -269,11 +255,6 @@ export async function render(root, params) {
     }
     if (a === 'filters' || a === 'adjust') { panel = panel === a ? null : a; drawPanel(); return; }
     await persist();
-    if (a === 'crop') go('crop', { pageId: page.id });
-    if (a === 'clean') go('annotate', { pageId: page.id, tool: 'whiteout' });
-    if (a === 'text') go('annotate', { pageId: page.id, tool: 'text' });
-    if (a === 'sign') go('annotate', { pageId: page.id, tool: 'sign' });
-    if (a === 'annotate') go('annotate', { pageId: page.id, tool: 'highlight' });
     if (a === 'ocr') go('ocr', { docId, pageIndex: idx });
   });
 
@@ -293,6 +274,8 @@ export async function render(root, params) {
     if (a === 'pen') go('annotate', { pageId: page.id, tool: 'pen' });
     if (a === 'text') go('annotate', { pageId: page.id, tool: 'text' });
     if (a === 'sign') go('annotate', { pageId: page.id, tool: 'sign' });
+    if (a === 'highlight') go('annotate', { pageId: page.id, tool: 'highlight' });
+    if (a === 'clean') go('annotate', { pageId: page.id, tool: 'whiteout' });
   });
   try { if (localStorage.getItem('sideOpen')) $('#side', root).classList.add('open'); } catch { /* */ }
   $('#retake', root).onclick = async () => { await persist(); go('camera', { docId, replaceId: page.id }); };
@@ -361,9 +344,22 @@ export async function render(root, params) {
     go('home', {}, { replace: true });
   };
   $('#more', root).onclick = () => menu([
-    { icon: 'rotateR', label: 'Girar a la derecha', onClick: () => rotateBy(90) },
-    { icon: 'rotateL', label: 'Girar a la izquierda', onClick: () => rotateBy(-90) },
+    { icon: 'share', label: 'Compartir esta página', onClick: async () => {
+      await persist();
+      const { ensureFullRes } = await import('../upgrader.js');
+      const pr = progress('Preparando…');
+      try {
+        await ensureFullRes(page);
+        const { finalPageCanvas, canvasToBlob } = await import('../imaging.js');
+        const blob = await canvasToBlob(await finalPageCanvas(page), 'image/jpeg', 0.9);
+        const { safeName, shareFiles, downloadBlob } = await import('../ui.js');
+        const f = new File([blob], `${safeName(doc.name)}-p${idx + 1}.jpg`, { type: 'image/jpeg' });
+        pr.close();
+        if (!(await shareFiles([f], f.name))) downloadBlob(f, f.name);
+      } catch (e) { pr.close(); toast(e.message, 'error'); }
+    } },
     { icon: 'duplicate', label: 'Duplicar página', onClick: async () => { await persist(); await duplicatePage(doc, page); doc = await db.getDoc(docId); await drawStrip(); toast('Página duplicada', 'ok'); load(idx + 1); } },
+    { icon: 'download', label: 'Exportar documento…', onClick: async () => { await persist(); openExport(doc, await db.getPages(doc)); } },
     { icon: 'grid', label: 'Ver todas las páginas', onClick: async () => { await persist(); go('doc', { id: docId }, { replace: fromScan }); } },
   ]);
 

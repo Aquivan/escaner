@@ -1,9 +1,9 @@
 // Vista de documento: páginas, reordenar arrastrando, selección, separar, extraer y exportar.
 import * as db from '../db.js';
 import { icon } from '../icons.js';
-import { h, $, $$, fmtDate, toast, sheet, confirmDlg, promptDlg, menu, progress, pickFiles } from '../ui.js';
+import { h, $, $$, fmtDate, toast, sheet, confirmDlg, promptDlg, menu, progress } from '../ui.js';
 import { blobUrl, renderPage } from '../imaging.js';
-import { importFiles, pagesToNewDoc, removePagesFromDoc } from '../pages.js';
+import { pagesToNewDoc, removePagesFromDoc } from '../pages.js';
 import { makeSortable } from '../sortable.js';
 import { openExport } from '../export-sheet.js';
 import { parseRanges, chunk } from '../ranges.js';
@@ -95,19 +95,8 @@ export async function render(root, { id }) {
 
   async function reload() { doc = await db.getDoc(id); pages = await db.getPages(doc); draw(); }
 
-  function addPagesMenu() {
-    menu([
-      { icon: 'camera', label: 'Escanear con la cámara', onClick: () => go('camera', { docId: doc.id }) },
-      { icon: 'idcard', label: 'Escanear carnet (2 caras)', onClick: () => go('camera', { docId: doc.id, mode: 'id' }) },
-      { icon: 'upload', label: 'Importar fotos o PDF', onClick: async () => {
-        const files = await pickFiles({ accept: 'image/*,application/pdf' });
-        if (!files.length) return;
-        const pr = progress('Importando…');
-        try { await importFiles(doc, files, pr); } catch (e) { toast(e.message, 'error'); }
-        pr.close(); reload();
-      } },
-    ]);
-  }
+  // Directo a la cámara: dentro están la galería (fotos y PDF) y el modo carnet
+  function addPagesMenu() { go('camera', { docId: doc.id }); }
 
   async function rename() {
     const n = await promptDlg('Nombre del documento', doc.name);

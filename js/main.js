@@ -3,7 +3,7 @@ import { loadSettings } from './settings.js';
 import { loadOpenCV, onStatus } from './loader.js';
 import { toast, h, $ } from './ui.js';
 
-export const APP_VERSION = '12';
+export const APP_VERSION = '13';
 window.APP_VERSION = APP_VERSION;
 
 const views = {

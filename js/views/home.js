@@ -19,7 +19,6 @@ export async function render(root) {
     <div class="home">
       <div class="search">${icon('search')}<input class="input" id="q" type="search" placeholder="Buscar en nombres y en el texto de los documentos" autocomplete="off"></div>
       <div class="quick">
-        <button id="qScan">${icon('camera')}Escanear</button>
         <button id="qImport">${icon('upload')}Importar fotos o PDF</button>
         <button id="qId">${icon('idcard')}Carnet / DNI</button>
         <button id="qTools">${icon('tools')}Herramientas PDF</button>
@@ -152,7 +151,6 @@ export async function render(root) {
 
   const scan = () => go('camera', {});
   $('#fab', root).onclick = scan;
-  $('#qScan', root).onclick = scan;
   $('#qId', root).onclick = () => go('camera', { mode: 'id' });
   $('#qTools', root).onclick = () => go('pdftools', {});
   $('#qImport', root).onclick = async () => {
@@ -199,6 +197,11 @@ async function openSettings(onChange) {
       </div></label>
     <label class="field"><span>Filtro por defecto al escanear</span>
       <select class="input" id="defF">${Object.entries(FILTER_NAMES).map(([k, l]) => `<option value="${k}" ${k === f ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="field"><span>Calidad de foto</span>
+      <select class="input" id="pq">
+        <option value="max" ${(settings.photoQuality || 'max') === 'max' ? 'selected' : ''}>Máxima (foto del sensor, como la cámara del teléfono)</option>
+        <option value="fast" ${settings.photoQuality === 'fast' ? 'selected' : ''}>Rápida (disparo instantáneo desde el vídeo)</option>
+      </select></label>
     <label class="switch"><span class="sw-text">Captura automática<small>Dispara sola cuando el documento está quieto y bien encuadrado</small></span><input type="checkbox" id="auto" ${settings.autoCapture ? 'checked' : ''}></label>
     <label class="switch"><span class="sw-text">Revisar recorte tras cada foto<small>Si está apagado, solo se abre cuando no se detectan bordes</small></span><input type="checkbox" id="rev" ${settings.reviewCapture ? 'checked' : ''}></label>
     <label class="switch"><span class="sw-text">Detectar bordes al importar fotos<small>Útil para fotos de papeles; apágalo para capturas de pantalla</small></span><input type="checkbox" id="det" ${settings.detectOnImport !== false ? 'checked' : ''}></label>
@@ -218,6 +221,7 @@ async function openSettings(onChange) {
     await save('theme', b.dataset.v);
   });
   $('#defF', body).onchange = e => save('defaultFilter', { preset: e.target.value });
+  $('#pq', body).onchange = e => save('photoQuality', e.target.value);
   $('#auto', body).onchange = e => save('autoCapture', e.target.checked);
   $('#rev', body).onchange = e => save('reviewCapture', e.target.checked);
   $('#det', body).onchange = e => save('detectOnImport', e.target.checked);

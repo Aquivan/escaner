@@ -41,6 +41,7 @@ export async function render(root, params) {
         <video class="cam-video" id="video" playsinline muted autoplay></video>
         <canvas class="overlay" id="ov"></canvas>
         <div class="cam-hint" id="hint">Iniciando cámara…</div>
+        <button class="res-chip" id="res" hidden title="Calidad de foto (toca para cambiar)"></button>
         <div class="cam-flash" id="flash"></div>
       </div>
       <div class="cam-modes">
@@ -101,9 +102,16 @@ export async function render(root, params) {
         if (caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
       } catch { /* */ }
       if (window.ImageCapture) {
-        try { new ImageCapture(track).getPhotoCapabilities().then(pc => { photoFlash = (pc.fillLightMode || []).includes('flash'); }).catch(() => {}); } catch { /* */ }
+        try {
+          new ImageCapture(track).getPhotoCapabilities().then(pc => {
+            photoFlash = (pc.fillLightMode || []).includes('flash');
+            if (pc.imageWidth?.max && pc.imageHeight?.max) photoRes = [pc.imageWidth.max, pc.imageHeight.max];
+            drawRes();
+          }).catch(() => {});
+        } catch { /* */ }
       }
       applyFlash();
+      drawRes();
     };
     readCaps();
     setTimeout(() => {
@@ -238,6 +246,7 @@ export async function render(root, params) {
   };
   async function loop() {
     if (!running) return;
+    if (video.videoWidth && $('#res', root).hidden) drawRes();
     if (video.videoWidth && !reviewing && !busyCapture && !searchingTorch) {
       let r = { quad: null };
       try { r = await detectSmart(video, { live: true }); } catch (e) { console.warn(e); }
@@ -291,30 +300,69 @@ export async function render(root, params) {
 
   // ---------- Captura ----------
   let busyCapture = false;
+  // ---------- Calidad y resolución ----------
+  // Máxima: foto del sensor (ImageCapture.takePhoto), la misma resolución que la cámara del teléfono.
+  // Rápida: fotograma del vídeo (disparo instantáneo, algo menos de resolución).
+  let photoRes = null;
+  const canPhoto = () => !!(window.ImageCapture && track);
+  const maxQuality = () => (settings.photoQuality || 'max') === 'max';
+  const mp = (w, h) => { const v = w * h / 1e6; return v >= 10 ? Math.round(v) : v.toFixed(1).replace('.0', ''); };
+  function drawRes() {
+    const el = $('#res', root);
+    if (!el || !video.videoWidth) return;
+    const usePhoto = maxQuality() && canPhoto() && photoRes;
+    const [w, h] = usePhoto ? photoRes : [video.videoWidth, video.videoHeight];
+    const W = Math.max(w, h), H = Math.min(w, h);
+    el.textContent = `${usePhoto ? 'Máxima' : 'Rápida'} · ${mp(W, H)} MP · ${W}×${H}`;
+    el.hidden = false;
+  }
+  $('#res', root).onclick = async () => {
+    await save('photoQuality', maxQuality() ? 'fast' : 'max');
+    drawRes();
+    toast(maxQuality() ? 'Calidad máxima: foto del sensor, como la cámara del teléfono' : 'Calidad rápida: disparo instantáneo desde el vídeo');
+  };
+
+  async function takeSensorPhoto(opts) {
+    const ic = new ImageCapture(track);
+    const o = { ...opts };
+    if (photoRes) { o.imageWidth = photoRes[0]; o.imageHeight = photoRes[1]; }
+    try {
+      return await Promise.race([ic.takePhoto(o), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]);
+    } catch {
+      return await Promise.race([ic.takePhoto(opts), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]);
+    }
+  }
+
   async function grabFrame() {
     const flash = wantFlash();
-    let lit = false;
-    if (flash && torchSupported && !torchOn) {
+    const sensor = maxQuality() && canPhoto();
+    let lit = false, usedSensor = false;
+    // Con calidad máxima y flash de foto disponible, el propio teléfono dispara el flash
+    const nativeFlash = flash && sensor && photoFlash;
+    if (flash && !nativeFlash && torchSupported && !torchOn) {
       // Flash con la luz del teléfono: se enciende, la cámara ajusta la exposición, foto y se apaga
       await setTorch(true); lit = torchOn;
       if (lit) await new Promise(r => setTimeout(r, 650));
     }
     try {
-      // takePhoto da más resolución en Android, pero con la luz encendida reinicia la cámara
-      // y la luz queda pegada: en ese caso se usa el fotograma del vídeo
-      if (!lit && !torchOn && window.ImageCapture && track && /Android/i.test(navigator.userAgent)) {
+      if (sensor) {
         try {
-          const ic = new ImageCapture(track);
-          const opts = photoFlash ? { fillLightMode: flash ? 'flash' : 'off' } : {};
-          const blob = await Promise.race([ic.takePhoto(opts), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
+          const opts = photoFlash ? { fillLightMode: nativeFlash ? 'flash' : 'off' } : {};
+          usedSensor = true;
+          const blob = await takeSensorPhoto(opts);
           if (blob && blob.size) return blob;
-        } catch { /* respaldo */ }
+        } catch { /* respaldo: fotograma del vídeo */ }
       }
       const c = makeCanvas(video.videoWidth, video.videoHeight);
       c.getContext('2d').drawImage(video, 0, 0);
-      return await canvasToBlob(c, 'image/jpeg', 0.93);
+      return await canvasToBlob(c, 'image/jpeg', 0.95);
     } finally {
-      if (lit && flashMode() !== 'torch') await setTorch(false);
+      if ((lit || usedSensor && torchOn) && flashMode() !== 'torch') {
+        // takePhoto puede reiniciar la cámara y desincronizar la luz: se reafirma y se apaga
+        if (usedSensor) { try { await track.applyConstraints({ advanced: [{ torch: true }] }); } catch { /* */ } torchOn = true; }
+        await setTorch(false);
+      }
+      if (usedSensor && flashMode() === 'torch') { torchOn = false; await setTorch(true); } // la linterna sigue encendida
     }
   }
 

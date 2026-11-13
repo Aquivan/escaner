@@ -14,7 +14,7 @@ const COLORS = {
 };
 const TOOLS = [
   ['select', 'move', 'Mover'], ['text', 'type', 'Texto'], ['sign', 'signature', 'Firma'],
-  ['highlight', 'highlighter', 'Resaltar'], ['pen', 'pen', 'Lápiz'], ['whiteout', 'eraser', 'Corrector'],
+  ['highlight', 'highlighter', 'Resaltar'], ['pen', 'pen', 'Lápiz'], ['whiteout', 'eraser', 'Borrador'],
 ];
 
 export async function render(root, { pageId, tool: initialTool }) {
