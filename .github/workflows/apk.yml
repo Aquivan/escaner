@@ -29,8 +29,6 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
-
       # Clave de firma: se crea una sola vez y se guarda en la caché privada de Actions
       # (no en el repositorio) para que cada APK nueva se instale encima de la anterior.
       - name: Clave de firma
