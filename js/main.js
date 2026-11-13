@@ -3,7 +3,7 @@ import { loadSettings } from './settings.js';
 import { loadOpenCV, onStatus } from './loader.js';
 import { toast, h, $ } from './ui.js';
 
-export const APP_VERSION = '13';
+export const APP_VERSION = '14';
 window.APP_VERSION = APP_VERSION;
 
 const views = {
@@ -99,6 +99,8 @@ async function start() {
   idle(() => loadOpenCV().catch(() => {}));
   // Completa en segundo plano la alta resolución de páginas que quedaron pendientes
   setTimeout(() => import('./upgrader.js').then(m => m.resumePending()).catch(() => {}), 4000);
+  // y el texto de los documentos que quedaron sin leer
+  setTimeout(() => import('./autoocr.js').then(m => m.resumeAutoOcr()).catch(() => {}), 9000);
 }
 
 start();

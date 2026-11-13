@@ -12,10 +12,11 @@ export const settings = {
   reviewCapture: false,     // abrir recorte tras cada captura
   detectOnImport: true,
   ocrLangs: ['spa'],
+  autoOcr: true,            // al guardar: leer el texto y nombrar el documento solo
   ocrEngine: 'paddle',      // paddle | tesseract
   paddleModel: 'tiny',      // tiny (rápido) | small (máxima precisión)
   signatures: [],           // firmas guardadas (data URL PNG)
-  export: { format: 'pdf', dpi: 150, quality: 0.85, pageSize: 'auto', searchable: false, grayscale: false, pageNumbers: false, watermark: '' },
+  export: { format: 'pdf', dpi: 150, quality: 0.85, pageSize: 'auto', searchable: true, grayscale: false, pageNumbers: false, watermark: '' },
 };
 
 export async function loadSettings() {

@@ -47,6 +47,8 @@ export async function render(root, { docId, pageIndex, all }) {
           <button class="btn small" id="copy">${icon('copy')}Copiar</button>
           <button class="btn small" id="txt">${icon('download')}.txt</button>
           <button class="btn small" id="share">${icon('share')}Compartir</button>
+          <button class="btn small" id="speak">${icon('sun')}Escuchar</button>
+          <button class="btn small" id="word">${icon('file')}Word</button>
           <span class="spacer"></span>
           <button class="btn small primary" id="pdf">${icon('filePdf')}PDF buscable</button>
         </div>
@@ -124,8 +126,29 @@ export async function render(root, { docId, pageIndex, all }) {
     await openExport(doc, targetPages().length === pages.length ? pages : targetPages());
     settings.export = { ...prev, ...settings.export };
   };
-  $('#back', root).onclick = back;
+  // Leer en voz alta (como el lector de Microsoft Lens)
+  const speakBtn = $('#speak', root);
+  if (!('speechSynthesis' in window)) speakBtn.hidden = true;
+  speakBtn.onclick = () => {
+    const synth = window.speechSynthesis;
+    if (synth.speaking) { synth.cancel(); speakBtn.lastChild.textContent = 'Escuchar'; return; }
+    const u = new window.SpeechSynthesisUtterance($('#text', root).value.replace(/--- Página \d+ ---/g, ''));
+    const lang = (settings.ocrLangs || ['spa'])[0];
+    u.lang = { spa: 'es-ES', eng: 'en-US', por: 'pt-BR', fra: 'fr-FR', deu: 'de-DE', ita: 'it-IT', cat: 'ca-ES', glg: 'gl-ES', eus: 'eu-ES' }[lang] || 'es-ES';
+    const voice = synth.getVoices().find(v => v.lang && v.lang.toLowerCase().startsWith(u.lang.slice(0, 2)));
+    if (voice) u.voice = voice;
+    u.onend = u.onerror = () => { speakBtn.lastChild.textContent = 'Escuchar'; };
+    synth.speak(u);
+    speakBtn.lastChild.textContent = 'Detener';
+  };
+  $('#word', root).onclick = async () => {
+    const { buildDocx } = await import('../docx.js');
+    const tp = targetPages().filter(p => p.ocr);
+    const blob = await buildDocx(tp, doc.name);
+    downloadBlob(new File([blob], `${safeName(doc.name)}.docx`, { type: blob.type }), `${safeName(doc.name)}.docx`);
+  };
+  $('#back', root).onclick = () => { try { window.speechSynthesis?.cancel(); } catch { /* */ } back(); };
   show();
-  return null;
+  return () => { try { window.speechSynthesis?.cancel(); } catch { /* */ } };
 }
 

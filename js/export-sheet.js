@@ -18,7 +18,8 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
         <button class="chip" data-v="pdf">${icon('filePdf')}PDF</button>
         <button class="chip" data-v="jpg">${icon('image')}JPG</button>
         <button class="chip" data-v="png">${icon('image')}PNG</button>
-        <button class="chip" data-v="txt">${icon('type')}Texto (OCR)</button>
+        <button class="chip" data-v="docx">${icon('file')}Word</button>
+        <button class="chip" data-v="txt">${icon('type')}Texto</button>
       </div></div>
     <div id="imgOpts">
       <div class="field"><span class="field-label">Resolución</span>
@@ -62,7 +63,7 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     $('#dpiVal', body).value = o.dpi;
     setChips('q', o.quality);
     setChips('ps', o.pageSize || 'auto');
-    $('#imgOpts', body).hidden = o.format === 'txt';
+    $('#imgOpts', body).hidden = o.format === 'txt' || o.format === 'docx';
     $('#sizeField', body).hidden = o.format !== 'pdf';
     $('#srchRow', body).hidden = o.format !== 'pdf';
     $('#srch', body).checked = !!o.searchable;
@@ -89,7 +90,7 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
   function estimate() {
     clearTimeout(estT);
     const el = $('#est', body);
-    if (o.format === 'txt') { el.textContent = fmtBytes(new Blob([ocrText(pages)]).size); $('#estNote', body).textContent = ''; return; }
+    if (o.format === 'txt' || o.format === 'docx') { el.textContent = `≈ ${fmtBytes(new Blob([ocrText(pages)]).size + (o.format === 'docx' ? 4000 : 0))}`; $('#estNote', body).textContent = pages.some(p => !p.ocr) ? 'se leerá el texto al exportar' : ''; return; }
     el.textContent = 'calculando…';
     estT = setTimeout(async () => {
       const tok = ++estTok;
@@ -116,13 +117,13 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     try {
       let files;
       // Páginas aún en versión rápida: se completa la alta resolución antes de exportar
-      if (o.format !== 'txt' && pages.some(p => p.fullRes === false)) {
+      if (o.format !== 'txt' && o.format !== 'docx' && pages.some(p => p.fullRes === false)) {
         pr.title('Preparando alta resolución…');
         const { ensureAllFullRes } = await import('./upgrader.js');
         await ensureAllFullRes(pages, f => pr.set(f));
         pr.title('Exportando…');
       }
-      if (o.format === 'txt' || (o.format === 'pdf' && o.searchable)) {
+      if (o.format === 'txt' || o.format === 'docx' || (o.format === 'pdf' && o.searchable)) {
         const missing = pages.filter(p => !p.ocr);
         for (let i = 0; i < missing.length; i++) {
           pr.title(`Reconociendo texto (${i + 1}/${missing.length})`);
@@ -134,6 +135,9 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
       if (o.format === 'pdf') {
         const bytes = await buildPdf(pages, o, (f, d) => pr.set(f, d), name);
         files = [new File([bytes], `${name}.pdf`, { type: 'application/pdf' })];
+      } else if (o.format === 'docx') {
+        const { buildDocx } = await import('./docx.js');
+        files = [new File([await buildDocx(pages, $('#name', body).value || doc.name)], `${name}.docx`, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })];
       } else if (o.format === 'txt') {
         files = [new File([ocrText(pages)], `${name}.txt`, { type: 'text/plain' })];
       } else {

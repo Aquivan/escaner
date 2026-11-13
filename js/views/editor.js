@@ -10,6 +10,7 @@ import { savePage, removePagesFromDoc, duplicatePage } from '../pages.js';
 import { makeSortable } from '../sortable.js';
 import { openExport } from '../export-sheet.js';
 import { go, back } from '../nav.js';
+import { settings } from '../settings.js';
 
 const PRESET_LIST = [
   ['original', 'Original'], ['auto', 'Mejorado'], ['clean', 'Limpio'], ['gray', 'Grises'], ['bw', 'B/N'], ['board', 'Pizarra'], ['photo', 'Foto'],
@@ -314,12 +315,19 @@ export async function render(root, params) {
       $('#nm', body).value = r.name;
       $('#anMsg', body).innerHTML = `<span class="tag">${esc(r.label)}</span>${r.total ? ` Total ${esc(r.total)}` : ''}`;
     };
-    // Si ya hay texto reconocido, se sugiere al instante
-    suggestForDoc(doc, { runOcr: false }).then(r => { if (r && r.type !== 'documento') applyInfo(r); }).catch(() => {});
+    // Como Google Drive: lee el documento y propone el nombre sin que pulses nada
+    // (si ya escribiste uno, no se toca)
+    let typed = false;
+    $('#nm', body).addEventListener('input', () => { typed = true; });
+    const autoName = settings.autoOcr !== false;
+    if (autoName) $('#anMsg', body).textContent = 'Leyendo el documento para nombrarlo…';
+    const autoP = suggestForDoc(doc, { runOcr: autoName, onProgress: (f, st) => { if (!info) $('#anMsg', body).textContent = `${st || 'Leyendo'}…`; } })
+      .then(r => { if (r && !typed && (r.type !== 'documento' || autoName)) applyInfo(r); else if (!r && autoName) $('#anMsg', body).textContent = 'No se encontró texto para nombrarlo'; return r; })
+      .catch(() => null);
     $('#anBtn', body).onclick = async () => {
       const b = $('#anBtn', body); b.disabled = true;
       $('#anMsg', body).textContent = 'Leyendo el documento…';
-      try { applyInfo(await suggestForDoc(doc, { onProgress: (f, st) => { $('#anMsg', body).textContent = `${st || 'Leyendo'}…`; } })); } catch (e) { $('#anMsg', body).textContent = `No se pudo leer: ${e.message}`; }
+      try { typed = false; applyInfo(await suggestForDoc(doc, { onProgress: (f, st) => { $('#anMsg', body).textContent = `${st || 'Leyendo'}…`; } })); } catch (e) { $('#anMsg', body).textContent = `No se pudo leer: ${e.message}`; }
       b.disabled = false;
     };
     setTimeout(() => $('#nm', body).select(), 80);
@@ -329,6 +337,19 @@ export async function render(root, params) {
     doc.name = nameEl.value.trim().replace(/[\\<>"|?*]+/g, '') || doc.name;
     if (info) { doc.type = info.type; doc.typeLabel = info.label; doc.info = { number: info.number, date: info.date, total: info.total, ruc: info.ruc, company: info.company }; }
     await db.putDoc(doc);
+    // Si se guardó antes de terminar de leer y no escribiste un nombre, se nombra al terminar
+    if (!info && !typed && autoName) {
+      const defaultName = doc.name;
+      autoP.then(async r => {
+        const d = await db.getDoc(docId);
+        if (!r || !d || d.name !== defaultName) return;
+        Object.assign(d, { name: r.name, type: r.type, typeLabel: r.label, info: { number: r.number, date: r.date, total: r.total, ruc: r.ruc, company: r.company } });
+        await db.putDoc(d);
+        toast(`Nombrado: ${r.name}`, 'ok');
+      });
+    }
+    // Texto de todas las páginas en segundo plano: PDF buscables y búsqueda dentro de los documentos
+    import('../autoocr.js').then(m => m.queueDocOcr(doc)).catch(() => {});
     go('doc', { id: docId }, { replace: true });
     if (v === 'export') setTimeout(async () => openExport(doc, await db.getPages(doc)), 350);
     else toast('Guardado', 'ok');
@@ -358,10 +379,43 @@ export async function render(root, params) {
         if (!(await shareFiles([f], f.name))) downloadBlob(f, f.name);
       } catch (e) { pr.close(); toast(e.message, 'error'); }
     } },
+    { icon: 'idcard', label: 'Guardar como contacto (tarjeta de visita)', onClick: () => saveContact() },
     { icon: 'duplicate', label: 'Duplicar página', onClick: async () => { await persist(); await duplicatePage(doc, page); doc = await db.getDoc(docId); await drawStrip(); toast('Página duplicada', 'ok'); load(idx + 1); } },
     { icon: 'download', label: 'Exportar documento…', onClick: async () => { await persist(); openExport(doc, await db.getPages(doc)); } },
     { icon: 'grid', label: 'Ver todas las páginas', onClick: async () => { await persist(); go('doc', { id: docId }, { replace: fromScan }); } },
   ]);
+
+  // Tarjeta de visita → contacto del teléfono (.vcf)
+  async function saveContact() {
+    await persist();
+    const pr = progress('Leyendo la tarjeta…');
+    let c;
+    try {
+      const { recognizePage } = await import('../ocr-engine.js');
+      if (!page.ocr) { page.ocr = await recognizePage(page, settings.ocrLangs, (f, st) => pr.set(f, st)); await db.putPage(page); }
+      const { parseContact } = await import('../vcard.js');
+      c = parseContact(page.ocr.text);
+    } catch (e) { pr.close(); toast(e.message, 'error'); return; }
+    pr.close();
+    const f = (id, label, val, type = 'text') => `<label class="field"><span>${label}</span><input class="input" id="${id}" type="${type}" value="${esc(val || '')}"></label>`;
+    const body = h(`<div>
+      ${f('cName', 'Nombre', c.name)}${f('cOrg', 'Empresa', c.org)}${f('cTitle', 'Cargo', c.title)}
+      ${f('cTel', 'Teléfonos (separados por coma)', c.phones.join(', '), 'tel')}${f('cMail', 'Correo', c.emails.join(', '), 'email')}
+      ${f('cWeb', 'Web', c.webs.join(', '))}${f('cAdr', 'Dirección', c.address)}
+      <p class="small muted">Revisa los datos leídos y corrígelos si hace falta.</p></div>`);
+    const sh = sheet({ title: 'Guardar contacto', body, actions: [{ label: 'Cancelar' }, { label: 'Guardar contacto', icon: 'download', cls: 'primary', onClick: async () => {
+      const g = id => $(`#${id}`, body).value.trim();
+      const list = id => g(id).split(/\s*,\s*/).filter(Boolean);
+      const { toVcf } = await import('../vcard.js');
+      const vcf = toVcf({ name: g('cName'), org: g('cOrg'), title: g('cTitle'), phones: list('cTel'), emails: list('cMail'), webs: list('cWeb'), address: g('cAdr') });
+      const { safeName, shareFiles, downloadBlob } = await import('../ui.js');
+      const file = new File([vcf], `${safeName(g('cName') || g('cOrg') || 'contacto')}.vcf`, { type: 'text/vcard' });
+      // Al abrir el .vcf, el teléfono ofrece añadirlo a Contactos
+      if (!(await shareFiles([file], file.name))) downloadBlob(file, file.name);
+      return true;
+    } }] });
+    await sh.done;
+  }
 
   sortable = makeSortable(strip, {
     item: '.strip-item[data-id]',

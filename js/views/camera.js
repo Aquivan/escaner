@@ -14,7 +14,7 @@ import { settings, save } from '../settings.js';
 import { go, back } from '../nav.js';
 
 export async function render(root, params) {
-  const MODES = { doc: 'Escanear', book: 'Libro', id: 'Carnet / DNI', board: 'Pizarra', receipt: 'Recibo' };
+  const MODES = { doc: 'Escanear', book: 'Libro', id: 'Carnet / DNI', card: 'Tarjeta de visita', board: 'Pizarra', receipt: 'Recibo' };
   let mode = MODES[params.mode] ? params.mode : 'doc';
   let docId = params.docId || null;
   let insertAt = params.insertAt ?? null;
@@ -49,6 +49,7 @@ export async function render(root, params) {
           <button data-m="doc">Documento</button>
           <button data-m="book">Libro</button>
           <button data-m="id">Carnet</button>
+          <button data-m="card">Tarjeta</button>
           <button data-m="board">Pizarra</button>
           <button data-m="receipt">Recibo</button>
         </div>
@@ -70,7 +71,7 @@ export async function render(root, params) {
 
   async function ensureDoc() {
     if (docId) return db.getDoc(docId);
-    const d = await db.newDoc({ id: 'Carnet', book: 'Libro', board: 'Pizarra', receipt: 'Recibo' }[mode]);
+    const d = await db.newDoc({ id: 'Carnet', book: 'Libro', card: 'Tarjeta de visita', board: 'Pizarra', receipt: 'Recibo' }[mode]);
     docId = d.id;
     createdHere = true;
     return d;
@@ -621,12 +622,14 @@ export async function render(root, params) {
   loadOpenCV().catch(() => {});
   loadMl();
   import('../upgrader.js').then(m => m.pauseUpgrades(true)).catch(() => {});
+  import('../autoocr.js').then(m => m.pauseAutoOcr(true)).catch(() => {});
   try { await startCamera(); setHint(''); loop(); } catch (e) { console.warn(e); showCamError(e); }
 
   return () => {
     running = false;
     window.removeEventListener('keydown', onKey);
     import('../upgrader.js').then(m => m.pauseUpgrades(false)).catch(() => {});
+    import('../autoocr.js').then(m => m.pauseAutoOcr(false)).catch(() => {});
     if (torchOn && track) track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
     if (stream) stream.getTracks().forEach(t => t.stop());
   };
