@@ -1,0 +1,118 @@
+# Compila la app Android (APK) cada vez que cambia la app web y la publica en
+# https://github.com/Aquivan/escaner/releases/latest/download/EscanerPro.apk
+name: APK Android
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      # Clave de firma: se crea una sola vez y se guarda en la caché privada de Actions
+      # (no en el repositorio) para que cada APK nueva se instale encima de la anterior.
+      - name: Clave de firma
+        uses: actions/cache@v4
+        with:
+          path: apk/keystore
+          key: firma-apk-v1
+
+      - name: Crear clave si no existe
+        run: |
+          mkdir -p apk/keystore
+          if [ ! -f apk/keystore/escaner.keystore ]; then
+            openssl rand -hex 24 > apk/keystore/pass
+            keytool -genkeypair -keystore apk/keystore/escaner.keystore -alias escaner -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$(cat apk/keystore/pass)" -keypass "$(cat apk/keystore/pass)" -dname "CN=EscanerPro, O=EscanerPro, C=PE"
+          fi
+          echo "::add-mask::$(cat apk/keystore/pass)"
+          echo "KS_PASS=$(cat apk/keystore/pass)" >> "$GITHUB_ENV"
+
+      - name: Copiar la app web
+        run: |
+          mkdir -p apk/www
+          cp -r index.html app.html manifest.webmanifest css js lib icons apk/www/
+
+      - name: Proyecto Capacitor
+        working-directory: apk
+        run: |
+          npm install --no-audit --no-fund
+          npx cap add android
+          npx cap sync android
+
+      - name: Permisos, icono y versión
+        working-directory: apk/android
+        run: |
+          # Cámara propia de la app (modo carnet/libro) desde el WebView
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />#' app/src/main/AndroidManifest.xml
+          # Icono de la app
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            rm -f app/src/main/res/mipmap-$d/ic_launcher*.png app/src/main/res/mipmap-$d/ic_launcher*.webp
+            cp ../../icons/icon-192.png app/src/main/res/mipmap-$d/ic_launcher.png
+            cp ../../icons/icon-192.png app/src/main/res/mipmap-$d/ic_launcher_round.png
+            cp ../../icons/icon-192.png app/src/main/res/mipmap-$d/ic_launcher_foreground.png
+          done
+          rm -rf app/src/main/res/mipmap-anydpi-v26
+          # versionCode creciente para que el teléfono acepte la actualización
+          sed -i "s/versionCode 1$/versionCode ${{ github.run_number }}/" app/build.gradle
+          sed -i "s/versionName \"1.0\"/versionName \"1.${{ github.run_number }}\"/" app/build.gradle
+          # Firma fija (para poder instalar encima de la versión anterior)
+          cat >> app/build.gradle <<'GRADLE'
+
+          android {
+              signingConfigs {
+                  fija {
+                      storeFile file("../../keystore/escaner.keystore")
+                      storePassword System.getenv("KS_PASS")
+                      keyAlias "escaner"
+                      keyPassword System.getenv("KS_PASS")
+                  }
+              }
+              buildTypes {
+                  release { signingConfig signingConfigs.fija; minifyEnabled false }
+                  debug { signingConfig signingConfigs.fija }
+              }
+          }
+          GRADLE
+          grep -n "versionCode\|CAMERA" app/build.gradle app/src/main/AndroidManifest.xml
+
+      - name: Compilar
+        working-directory: apk/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk ../../EscanerPro.apk
+
+      - name: Publicar
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk
+          name: EscánerPro para Android
+          body: |
+            Instala **EscanerPro.apk** en tu Android (permite "instalar apps desconocidas" para Chrome o Archivos).
+            Usa el escáner de documentos de Google (el mismo de Google Drive).
+            Compilación ${{ github.run_number }} · ${{ github.sha }}
+          files: EscanerPro.apk
+          make_latest: true

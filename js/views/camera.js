@@ -631,6 +631,31 @@ export async function render(root, params) {
   const onKey = e => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); capture(false); } };
   window.addEventListener('keydown', onKey);
 
+  // En la APK: escáner de documentos de Google (el mismo de Google Drive)
+  if (settings.googleScanner !== false && mode !== 'id' && mode !== 'book' && !params.ownCamera) {
+    const nat = await import('../native.js');
+    if (await nat.googleScannerAvailable()) {
+      try {
+        setHint('Abriendo el escáner…');
+        const blobs = await nat.googleScan({ pageLimit: replaceId ? 1 : 50 });
+        if (!blobs) { back(); return; }
+        const wasReplace = !!replaceId;
+        for (const blob of blobs) {
+          const page = blankPage(blob);
+          // Google ya recortó y limpió la hoja: se guarda tal cual (se puede cambiar en Filtros)
+          page.filter = { preset: 'original', shadows: false, brightness: 0, contrast: 0, sharpness: 0 };
+          if (mode === 'receipt') page.filter = { preset: 'gray', shadows: false, brightness: 0, contrast: 15, sharpness: 20 };
+          enqueue(page); queued++;
+        }
+        if (wasReplace) await queue; else await finish(); // al repetir, addToDoc ya vuelve a la revisión
+      } catch (e) {
+        console.warn(e);
+        toast(`Escáner de Google no disponible (${e.message || e}); se usa la cámara de la app`);
+        go('camera', { ...params, ownCamera: true }, { replace: true });
+      }
+      return;
+    }
+  }
   loadOpenCV().catch(() => {});
   loadMl();
   import('../upgrader.js').then(m => m.pauseUpgrades(true)).catch(() => {});

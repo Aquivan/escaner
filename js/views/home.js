@@ -202,6 +202,7 @@ async function openSettings(onChange) {
         <option value="max" ${(settings.photoQuality || 'max') === 'max' ? 'selected' : ''}>Máxima (foto del sensor, como la cámara del teléfono)</option>
         <option value="fast" ${settings.photoQuality === 'fast' ? 'selected' : ''}>Rápida (disparo instantáneo desde el vídeo)</option>
       </select></label>
+    ${window.Capacitor?.isNativePlatform?.() ? `<label class="switch"><span class="sw-text">Escáner de Google<small>El mismo de Google Drive: detecta la hoja, la recorta y la limpia. Desactívalo para usar la cámara propia de la app</small></span><input type="checkbox" id="gscan" ${settings.googleScanner !== false ? 'checked' : ''}></label>` : ''}
     <label class="switch"><span class="sw-text">Texto y nombre automáticos<small>Al guardar, lee el documento: lo nombra solo y los PDF salen buscables</small></span><input type="checkbox" id="aocr" ${settings.autoOcr !== false ? 'checked' : ''}></label>
     <label class="switch"><span class="sw-text">Captura automática<small>Dispara sola cuando el documento está quieto y bien encuadrado</small></span><input type="checkbox" id="auto" ${settings.autoCapture ? 'checked' : ''}></label>
     <label class="switch"><span class="sw-text">Revisar recorte tras cada foto<small>Si está apagado, solo se abre cuando no se detectan bordes</small></span><input type="checkbox" id="rev" ${settings.reviewCapture ? 'checked' : ''}></label>
@@ -224,6 +225,7 @@ async function openSettings(onChange) {
   $('#defF', body).onchange = e => save('defaultFilter', { preset: e.target.value });
   $('#pq', body).onchange = e => save('photoQuality', e.target.value);
   $('#aocr', body).onchange = e => save('autoOcr', e.target.checked);
+  const gs = $('#gscan', body); if (gs) gs.onchange = e => save('googleScanner', e.target.checked);
   $('#auto', body).onchange = e => save('autoCapture', e.target.checked);
   $('#rev', body).onchange = e => save('reviewCapture', e.target.checked);
   $('#det', body).onchange = e => save('detectOnImport', e.target.checked);

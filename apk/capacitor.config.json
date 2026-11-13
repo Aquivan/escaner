@@ -1,0 +1,6 @@
+{
+  "appId": "io.github.aquivan.escaner",
+  "appName": "EscánerPro",
+  "webDir": "www",
+  "android": { "allowMixedContent": false, "captureInput": true }
+}

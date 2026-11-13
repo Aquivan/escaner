@@ -5,6 +5,7 @@ export const settings = {
   theme: 'auto',            // auto | light | dark
   defaultFilter: { preset: 'auto' },
   autoCapture: true,
+  googleScanner: true, // APK: usar el escáner de documentos de Google (ML Kit)
   photoQuality: 'max',      // max (foto del sensor) | fast (fotograma del vídeo)
   flashMode: 'auto',        // auto | on | torch | off
   torchChecked: false,      // ya se buscó una cámara con flash y no había

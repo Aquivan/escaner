@@ -216,7 +216,7 @@ export async function render(root, params) {
   }
 
   async function deliver(files, zipName) {
-    const canShare = navigator.canShare && navigator.canShare({ files });
+    const canShare = (navigator.canShare && navigator.canShare({ files })) || !!window.Capacitor?.isNativePlatform?.();
     const s = sheet({
       title: 'Archivo listo', cls: 'dialog',
       body: `<p>${files.length === 1 ? esc(files[0].name) : `${files.length} archivos`} · <b>${fmtBytes(files.reduce((a, f) => a + f.size, 0))}</b></p>`,

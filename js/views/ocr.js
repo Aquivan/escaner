@@ -117,7 +117,7 @@ export async function render(root, { docId, pageIndex, all }) {
   $('#txt', root).onclick = () => downloadBlob(txtFile(), `${safeName(doc.name)}.txt`);
   $('#share', root).onclick = async () => {
     const text = $('#text', root).value;
-    try { if (navigator.share) { await navigator.share({ title: doc.name, text }); return; } } catch (e) { if (e.name === 'AbortError') return; }
+    try { if (navigator.share && !window.Capacitor?.isNativePlatform?.()) { await navigator.share({ title: doc.name, text }); return; } } catch (e) { if (e.name === 'AbortError') return; }
     if (!(await shareFiles([txtFile()], doc.name))) toast('Compartir no está disponible; usa Copiar');
   };
   $('#pdf', root).onclick = async () => {

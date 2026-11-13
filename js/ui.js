@@ -147,6 +147,7 @@ function downloadsCap() {
 export const embedded = (() => { try { return window.top !== window; } catch { return true; } })();
 
 export async function downloadBlob(blob, name) {
+  if (window.Capacitor?.isNativePlatform?.()) { const n = await import('./native.js'); await n.nativeSave(blob, name); return; }
   const cap = await downloadsCap();
   if (cap) {
     try { await cap.save({ filename: name, data: blob }); } catch (e) {
@@ -163,6 +164,7 @@ export async function downloadBlob(blob, name) {
 }
 
 export async function shareFiles(files, title) {
+  if (window.Capacitor?.isNativePlatform?.()) { const n = await import('./native.js'); return n.nativeShare(files, title); }
   try {
     if (navigator.canShare && navigator.canShare({ files })) {
       await navigator.share({ files, title });

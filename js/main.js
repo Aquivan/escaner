@@ -69,6 +69,8 @@ function setupStatusPill() {
 }
 
 async function start() {
+  // APK Android (Capacitor): carga el puente nativo antes de mostrar nada
+  if (window.androidBridge) { try { await import('../lib/capacitor-core.mjs'); } catch (e) { console.warn(e); } }
   await loadSettings();
   setupStatusPill();
   // 🧾 abierto desde el Portal de Vouchers: al exportar aparece «✅ Enviar a Vouchers»
@@ -77,7 +79,7 @@ async function start() {
   history.replaceState(initial, '');
   await render(initial);
 
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.Capacitor?.isNativePlatform?.()) {
     // Actualizaciones: se busca versión nueva al abrir y al volver a la app; cuando llega,
     // la página se recarga sola (salvo si estás en la cámara o editando)
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {

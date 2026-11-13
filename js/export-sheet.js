@@ -46,7 +46,7 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     </div>
     <div class="est"><div><div class="small muted">Peso estimado · ${pages.length} pág.</div><b id="est">—</b></div><small id="estNote"></small></div>
   </div>`);
-  const canShare = !!(navigator.canShare && navigator.share);
+  const canShare = !!(navigator.canShare && navigator.share) || !!window.Capacitor?.isNativePlatform?.();
   const vou = paraVouchers();   // 🧾 abierto desde el Portal de Vouchers
   if (vou && o.format !== 'pdf' && o.format !== 'jpg') o.format = 'pdf';
   const s = sheet({
