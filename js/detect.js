@@ -56,7 +56,7 @@ export function detectQuadSync(canvasSmall, minArea = 0.12) {
   return detectOnSmall(window.cv, canvasSmall, minArea);
 }
 
-function detectOnSmall(cv, canvas, minArea) {
+function detectOnSmall(cv, canvas, minArea, all = false) {
   const W = canvas.width, H = canvas.height, imgArea = W * H;
   const mats = [];
   const M = m => { mats.push(m); return m; };
@@ -121,18 +121,25 @@ function detectOnSmall(cv, canvas, minArea) {
       }
       list.forEach(({ cnt }) => cnt.delete());
     }
-    if (!candidates.length) return null;
+    if (!candidates.length) return all ? [] : null;
     candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0].q;
-    // Si coincide con el marco completo de la imagen no es una detección útil
     // Encoge un poco hacia el centro para no arrastrar el borde del fondo
-    const cx = best.reduce((s, p) => s + p[0], 0) / 4, cy = best.reduce((s, p) => s + p[1], 0) / 4;
-    const n = best.map(([x, y]) => {
-      const k = 1.5 / Math.max(1, Math.hypot(x - cx, y - cy));
-      return [Math.min(1, Math.max(0, (x + (cx - x) * k) / (W - 1))), Math.min(1, Math.max(0, (y + (cy - y) * k) / (H - 1)))];
-    });
-    if (polyArea(n) > 0.985) return null;
-    return n;
+    const norm = best => {
+      const cx = best.reduce((s, p) => s + p[0], 0) / 4, cy = best.reduce((s, p) => s + p[1], 0) / 4;
+      return best.map(([x, y]) => {
+        const k = 1.5 / Math.max(1, Math.hypot(x - cx, y - cy));
+        return [Math.min(1, Math.max(0, (x + (cx - x) * k) / (W - 1))), Math.min(1, Math.max(0, (y + (cy - y) * k) / (H - 1)))];
+      });
+    };
+    // Si coincide con el marco completo de la imagen no es una detección útil
+    const out = [];
+    for (const c of candidates) {
+      const n = norm(c.q);
+      if (polyArea(n) > 0.985 || out.some(o => quadDist(o, n) < 0.02)) continue;
+      out.push(n);
+      if (!all || out.length >= 4) break;
+    }
+    return all ? out : (out[0] || null);
   } catch (e) {
     console.warn('detección falló', e);
     return null;
@@ -180,23 +187,147 @@ async function detectMl(canvas) {
   return { q, score: r.score };
 }
 
-const quadDist = (a, b) => Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1])));
+function quadDist(a, b) { return Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1]))); }
 
-// Combina IA y visión clásica: la IA decide dónde está la hoja; si la clásica coincide,
-// se usan sus esquinas porque se pegan al borde exacto del papel.
+// ---------- Verificación con los bordes reales de la imagen ----------
+// Un marco solo es válido si cada uno de sus 4 lados está sobre un borde de verdad
+// (un salto de brillo o de color a lo largo de casi todo el lado), como hacen los
+// escáneres de Google y Adobe. Además se "imanta" cada lado al borde exacto del papel.
+function grayOf(canvas) {
+  const W = canvas.width, H = canvas.height;
+  const d = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+  const g = new Float32Array(W * H);
+  for (let i = 0, j = 0; j < g.length; i += 4, j++) g[j] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  // Suavizado 3×3 para que el texto y el grano no cuenten como bordes
+  const o = new Float32Array(W * H);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    o[i] = (g[i - W - 1] + g[i - W] + g[i - W + 1] + g[i - 1] + g[i] + g[i + 1] + g[i + W - 1] + g[i + W] + g[i + W + 1]) / 9;
+  }
+  return { g: o, W, H };
+}
+const at = (G, x, y) => {
+  const xi = Math.max(0, Math.min(G.W - 1, Math.round(x))), yi = Math.max(0, Math.min(G.H - 1, Math.round(y)));
+  return G.g[yi * G.W + xi];
+};
+// Contraste de un lado: diferencia entre una franja justo dentro y otra justo fuera
+function sideProfile(G, a, b, cx, cy) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1;
+  let nx = -dy / len, ny = dx / len;
+  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+  if ((cx - mx) * nx + (cy - my) * ny < 0) { nx = -nx; ny = -ny; } // n apunta hacia dentro
+  const N = Math.max(16, Math.min(48, Math.round(len / 5)));
+  const vals = [];
+  for (let k = 0; k < N; k++) {
+    const t = 0.08 + 0.84 * k / (N - 1), x = a[0] + dx * t, y = a[1] + dy * t;
+    // ¿Se sale de la imagen? Ese tramo no puede verificarse
+    if (x < 2 || y < 2 || x > G.W - 3 || y > G.H - 3) { vals.push(-1); continue; }
+    let ins = 0, outs = 0;
+    for (let d = 2; d <= 4; d++) { ins += at(G, x + nx * d, y + ny * d); outs += at(G, x - nx * d, y - ny * d); }
+    vals.push((ins - outs) / 3);
+  }
+  return vals;
+}
+function sideSupport(G, a, b, cx, cy) {
+  // Lado pegado al borde de la foto (hoja que llena el encuadre): no se puede verificar
+  const m = 0.03 * Math.max(G.W, G.H);
+  const near = (u, lim) => u < m || u > lim - m;
+  if ((near(a[0], G.W) && near(b[0], G.W) && Math.abs(a[0] - b[0]) < m) || (near(a[1], G.H) && near(b[1], G.H) && Math.abs(a[1] - b[1]) < m)) return { sup: 0.7, c: 0, border: true };
+  const v = sideProfile(G, a, b, cx, cy).filter(x => x !== -1);
+  if (v.length < 6) return { sup: 0.5, c: 0 }; // pegado al borde de la imagen: neutro
+  // El signo dominante (papel más claro o más oscuro que el fondo) debe mantenerse
+  const pos = v.filter(x => x > 9).length, neg = v.filter(x => x < -9).length;
+  const sup = Math.max(pos, neg) / v.length;
+  const c = Math.abs(v.reduce((s, x) => s + x, 0) / v.length);
+  return { sup, c };
+}
+export function edgeScore(G, qn) {
+  const q = qn.map(([x, y]) => [x * (G.W - 1), y * (G.H - 1)]);
+  const cx = q.reduce((s, p) => s + p[0], 0) / 4, cy = q.reduce((s, p) => s + p[1], 0) / 4;
+  const sides = [0, 1, 2, 3].map(i => sideSupport(G, q[i], q[(i + 1) % 4], cx, cy));
+  const sups = sides.map(s => s.sup);
+  if (sides.filter(s => !s.border).length < 2) return { min: 0, mean: 0, contrast: 0 }; // casi todo es el marco de la foto
+  return { min: Math.min(...sups), mean: sups.reduce((s, x) => s + x, 0) / 4, contrast: sides.reduce((s, x) => s + x.c, 0) / 4 };
+}
+// Mueve cada lado (sus dos extremos por separado, ±R px) hasta el borde más fuerte
+// y recalcula las esquinas como intersección de los lados ajustados.
+function refineQuad(G, qn, R = 6) {
+  const q = qn.map(([x, y]) => [x * (G.W - 1), y * (G.H - 1)]);
+  const cx = q.reduce((s, p) => s + p[0], 0) / 4, cy = q.reduce((s, p) => s + p[1], 0) / 4;
+  const lines = [];
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4];
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1;
+    let nx = -dy / len, ny = dx / len;
+    if ((cx - (a[0] + b[0]) / 2) * nx + (cy - (a[1] + b[1]) / 2) * ny < 0) { nx = -nx; ny = -ny; }
+    const score = (oa, ob) => {
+      const A = [a[0] + nx * oa, a[1] + ny * oa], B = [b[0] + nx * ob, b[1] + ny * ob];
+      const v = sideProfile(G, A, B, cx, cy).filter(x => x !== -1);
+      if (!v.length) return 0;
+      const sp = v.reduce((s, x) => s + x, 0), sn = -sp;
+      return Math.max(sp, sn) / v.length;
+    };
+    let best = [0, 0], bs = score(0, 0);
+    for (let oa = -R; oa <= R; oa += 2) for (let ob = -R; ob <= R; ob += 2) {
+      const s = score(oa, ob); if (s > bs + 0.5) { bs = s; best = [oa, ob]; }
+    }
+    // Afinado a 1 px alrededor del mejor
+    const [ba, bb] = best;
+    for (let oa = ba - 1; oa <= ba + 1; oa++) for (let ob = bb - 1; ob <= bb + 1; ob++) {
+      const s = score(oa, ob); if (s > bs) { bs = s; best = [oa, ob]; }
+    }
+    lines.push([[a[0] + nx * best[0], a[1] + ny * best[0]], [b[0] + nx * best[1], b[1] + ny * best[1]]]);
+  }
+  const inter = (l1, l2) => {
+    const [[x1, y1], [x2, y2]] = l1, [[x3, y3], [x4, y4]] = l2;
+    const den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (Math.abs(den) < 1e-6) return null;
+    const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den;
+    return [x1 + t * (x2 - x1), y1 + t * (y2 - y1)];
+  };
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const p = inter(lines[(i + 3) % 4], lines[i]);
+    if (!p) return qn;
+    out.push([Math.min(1, Math.max(0, p[0] / (G.W - 1))), Math.min(1, Math.max(0, p[1] / (G.H - 1)))]);
+  }
+  if (!isConvexQuad(out) || quadDist(out, qn) > 0.06) return qn;
+  return out;
+}
+
+// Combina IA y visión clásica y se queda con el marco cuyos lados coinciden mejor
+// con bordes reales del papel. Si ninguno convence, no hay documento.
 export async function detectSmart(source, { live = false } = {}) {
   const sw = source.width || source.videoWidth, sh = source.height || source.videoHeight;
-  const k = (live ? 360 : 480) / Math.max(sw, sh);
+  const k = (live ? 420 : 560) / Math.max(sw, sh);
   const c = makeCanvas(sw * k, sh * k);
   c.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0, c.width, c.height);
-  const classical = cvReady() ? detectOnSmall(window.cv, c, 0.12) : null;
+  const classical = cvReady() ? detectOnSmall(window.cv, c, 0.1, true) : [];
   let ml = null;
   try { ml = await detectMl(c); } catch (e) { console.warn(e); }
-  if (ml && classical) return { quad: quadDist(ml.q, classical) < 0.035 ? classical : ml.q, method: quadDist(ml.q, classical) < 0.035 ? 'mixto' : 'ia', score: ml.score, canvas: c };
-  // Solo IA (la clásica no ve nada): se exige más seguridad para no confundir techos o paredes
-  if (ml && ml.score >= 0.92) return { quad: ml.q, method: 'ia', score: ml.score, canvas: c };
-  if (classical) return { quad: classical, method: 'clasico', score: null, canvas: c };
-  return { quad: null, canvas: c };
+  const G = grayOf(c);
+  const cands = [];
+  if (ml) cands.push({ q: ml.q, src: 'ia', bonus: ml.score >= 0.9 ? 0.06 : 0 });
+  classical.forEach((q, i) => cands.push({ q, src: 'clasico', bonus: i === 0 ? 0.03 : 0 }));
+  let best = null;
+  for (const cd of cands) {
+    const r = refineQuad(G, cd.q);
+    const e = edgeScore(G, r);
+    const area = polyArea(r);
+    // Coincidencia IA + clásica: más confianza
+    const agree = cd.src === 'clasico' && ml && quadDist(ml.q, cd.q) < 0.05 ? 0.08 : 0;
+    const s = e.mean * 0.6 + e.min * 0.4 + cd.bonus + agree + Math.min(0.1, area * 0.15);
+    if (!best || s > best.s) best = { q: r, s, e, src: agree ? 'mixto' : cd.src, area };
+  }
+  // Umbrales: todos los lados con borde visible en buena parte de su longitud
+  const ok = best && best.e.min >= (live ? 0.45 : 0.35) && best.e.mean >= (live ? 0.62 : 0.5) && best.area >= 0.06;
+  if (!ok) {
+    // La hoja llena todo el encuadre (sus bordes coinciden con los de la foto):
+    // no hay lados que verificar, así que se exige mucha seguridad a la IA.
+    if (ml && ml.score >= (live ? 0.93 : 0.88) && polyArea(ml.q) > 0.8) return { quad: ml.q, method: 'ia', score: ml.score, canvas: c };
+    return { quad: null, canvas: c, dbg: best && { e: best.e, src: best.src } };
+  }
+  return { quad: best.q, method: best.src, score: best.s, edges: best.e, canvas: c };
 }
 
 // ---------- Nitidez (para avisar de fotos movidas) ----------

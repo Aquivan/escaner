@@ -220,6 +220,8 @@ export async function render(root, params) {
   }
   const qdist = (a, b) => (a && b ? Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1]))) : 1);
 
+  let hits = 0, misses = 0, cand = null, strong = false;
+  const quadArea = q => { let a = 0; for (let i = 0; i < 4; i++) { const [x1, y1] = q[i], [x2, y2] = q[(i + 1) % 4]; a += x1 * y2 - x2 * y1; } return Math.abs(a) / 2; };
   let sharpNow = 0, newPageReady = true, lastSig = null, shots = 0;
   // Huella 32×32 en grises del interior de la hoja, para saber si se cambió de hoja
   // aunque la nueva esté exactamente en el mismo sitio.
@@ -252,9 +254,17 @@ export async function render(root, params) {
       let r = { quad: null };
       try { r = await detectSmart(video, { live: true }); } catch (e) { console.warn(e); }
       if (!running) return;
+      // Consenso entre fotogramas: el marco aparece tras 2 detecciones coherentes seguidas
+      // y desaparece tras 2 fallos, así no salta a cualquier rectángulo suelto.
       const q = r.quad;
-      if (q) smooth = smooth && qdist(q, smooth) < 0.12 ? smooth.map((p, i) => [p[0] * 0.55 + q[i][0] * 0.45, p[1] * 0.55 + q[i][1] * 0.45]) : q;
-      else smooth = null;
+      if (q) {
+        hits = cand && qdist(q, cand) < 0.06 ? hits + 1 : 1; cand = q; misses = 0;
+        if (hits >= 2) smooth = smooth && qdist(q, smooth) < 0.1 ? smooth.map((p, i) => [p[0] * 0.4 + q[i][0] * 0.6, p[1] * 0.4 + q[i][1] * 0.6]) : q;
+        strong = !!r.edges && r.edges.min >= 0.6 && r.edges.mean >= 0.8;
+      } else {
+        hits = 0; cand = null;
+        if (++misses >= 2) { smooth = null; strong = false; }
+      }
       sharpNow = r.canvas ? sharpness(r.canvas, smooth) : 0;
       autoFlash(r.canvas);
       if (flashMode() !== 'torch' && !busyCapture && (torchOn || realTorch())) { torchOn = true; setTorch(false); }
@@ -266,13 +276,15 @@ export async function render(root, params) {
       else if (!smooth && isDark() && flashMode() === 'off') { setHint('Poca luz: activa el flash o acércate a una lámpara'); stableSince = 0; }
       else if (!smooth) { setHint(mode === 'id' ? (idFront ? 'Enfoca el REVERSO del carnet' : 'Enfoca el ANVERSO del carnet') : mode === 'book' ? 'Enfoca el libro abierto (2 páginas)' : 'Buscando documento…'); stableSince = 0; }
       else {
-        if (lastQuad && qdist(smooth, lastQuad) < 0.02) { if (!stableSince) stableSince = now; } else stableSince = 0;
+        // Quieto = el marco casi no se mueve, los bordes se ven claros y la hoja ocupa algo del encuadre
+        const still = lastQuad && qdist(smooth, lastQuad) < 0.015 && hits >= 2 && (strong || r.method === 'ia') && quadArea(smooth) >= 0.1;
+        if (still) { if (!stableSince) stableSince = now; } else stableSince = 0;
         // ¿Hay una hoja nueva? Se movió, se tapó un momento al cambiarla o cambió su contenido
         if (!newPageReady && (qdist(smooth, lastCaptureQuad) > 0.08 || (lastSig && sigDiff(signature(r.canvas, smooth), lastSig) > 0.45))) newPageReady = true;
         // La captura automática exige además que la imagen esté nítida
         const armed = settings.autoCapture && stableSince && now > cooldownUntil && newPageReady && sharp;
         $('#shutter', root).classList.toggle('armed', !!armed);
-        if (armed && now - stableSince > 1100) { setHint(''); lastSig = signature(r.canvas, smooth); capture(true); }
+        if (armed && now - stableSince > 1200) { setHint(''); lastSig = signature(r.canvas, smooth); capture(true); }
         else if (!sharp) setHint('Imagen borrosa: sujeta firme o acerca un poco');
         else if (!settings.autoCapture) setHint(wantFlash() && (torchSupported || photoFlash) ? 'Documento detectado · se usará el flash' : 'Documento detectado · pulsa el botón');
         else if (!newPageReady) setHint(`✓ Página ${shots} lista · coloca la siguiente hoja`);
