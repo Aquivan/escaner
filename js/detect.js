@@ -173,7 +173,7 @@ export async function loadMl() {
   }
   return mlMod;
 }
-export const mlReady = () => !!mlMod && !mlFailed;
+export const mlReady = () => (!!mlMod && !mlFailed) || (!!worker && !workerFailed);
 
 async function detectMl(canvas) {
   const m = await loadMl();
@@ -297,15 +297,58 @@ function refineQuad(G, qn, R = 6) {
 
 // Combina IA y visión clásica y se queda con el marco cuyos lados coinciden mejor
 // con bordes reales del papel. Si ninguno convence, no hay documento.
+// IA en un hilo aparte (Web Worker). Si el navegador no lo permite, se usa en el hilo principal.
+let worker = null, workerFailed = false, reqId = 0;
+const pending = new Map();
+function getWorker() {
+  if (worker || workerFailed) return worker;
+  try {
+    worker = new Worker(new URL('./detect-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = e => { const p = pending.get(e.data.id); if (p) { pending.delete(e.data.id); p(e.data); } };
+    worker.onerror = () => { workerFailed = true; worker = null; pending.forEach(p => p({ error: 'worker' })); pending.clear(); };
+  } catch { workerFailed = true; worker = null; }
+  return worker;
+}
+// Prepara la IA (en su hilo) antes de que haga falta
+export function warmupDetector() {
+  try {
+    if (typeof OffscreenCanvas === 'undefined' || !getWorker()) { loadMl(); return; }
+    const c = makeCanvas(64, 64); detectMlAsync(c).catch(() => {});
+  } catch { loadMl(); }
+}
+async function detectMlAsync(c) {
+  const w = typeof createImageBitmap === 'function' && typeof OffscreenCanvas !== 'undefined' ? getWorker() : null;
+  if (!w) return detectMl(c);
+  const bitmap = await createImageBitmap(c);
+  const id = ++reqId;
+  const res = await new Promise(ok => {
+    pending.set(id, ok);
+    w.postMessage({ id, bitmap, w: c.width, h: c.height }, [bitmap]);
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); ok({ error: 'timeout' }); } }, 4000);
+  });
+  if (res.error) { if (res.error === 'worker') return detectMl(c); return null; }
+  if (!res.ok) return null;
+  const W = c.width, H = c.height;
+  const q = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'].map(k => [
+    Math.min(1, Math.max(0, res.corners[k].x / W)), Math.min(1, Math.max(0, res.corners[k].y / H))]);
+  if (!isConvexQuad(q) || polyArea(q) < 0.08) return null;
+  return { q, score: res.score };
+}
+
 export async function detectSmart(source, { live = false } = {}) {
   const sw = source.width || source.videoWidth, sh = source.height || source.videoHeight;
   const k = (live ? 420 : 560) / Math.max(sw, sh);
   const c = makeCanvas(sw * k, sh * k);
   c.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0, c.width, c.height);
+  // La IA corre en paralelo (otro hilo) mientras aquí se hace la visión clásica
+  const mlP = detectMlAsync(c).catch(e => { console.warn(e); return null; });
   const classical = cvReady() ? detectOnSmall(window.cv, c, 0.1, true) : [];
-  let ml = null;
-  try { ml = await detectMl(c); } catch (e) { console.warn(e); }
   const G = grayOf(c);
+  const ml = await mlP;
+  return pickBest(c, G, ml, classical, live);
+}
+
+function pickBest(c, G, ml, classical, live) {
   const cands = [];
   if (ml) cands.push({ q: ml.q, src: 'ia', bonus: ml.score >= 0.9 ? 0.06 : 0 });
   classical.forEach((q, i) => cands.push({ q, src: 'clasico', bonus: i === 0 ? 0.03 : 0 }));
@@ -328,6 +371,22 @@ export async function detectSmart(source, { live = false } = {}) {
     return { quad: null, canvas: c, dbg: best && { e: best.e, src: best.src } };
   }
   return { quad: best.q, method: best.src, score: best.s, edges: best.e, canvas: c };
+}
+
+// Ajuste fino de esquinas sobre la foto ya tomada, a más resolución (precisión de 1–2 px
+// en la foto final, como los escáneres profesionales).
+export function refineHiRes(source, quad, maxSide = 1400) {
+  if (!quad) return quad;
+  const sw = source.width || source.videoWidth, sh = source.height || source.videoHeight;
+  const k = Math.min(1, maxSide / Math.max(sw, sh));
+  const c = makeCanvas(Math.round(sw * k), Math.round(sh * k));
+  c.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0, c.width, c.height);
+  const G = grayOf(c);
+  const before = edgeScore(G, quad);
+  let q = refineQuad(G, quad, 12);
+  q = refineQuad(G, q, 4);
+  const after = edgeScore(G, q);
+  return after.mean + after.min >= before.mean + before.min - 0.02 ? q : quad;
 }
 
 // ---------- Nitidez (para avisar de fotos movidas) ----------

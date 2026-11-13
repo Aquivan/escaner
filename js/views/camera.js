@@ -3,7 +3,7 @@ import * as db from '../db.js';
 import { icon } from '../icons.js';
 import { h, $, toast, pickFiles, progress, embedded } from '../ui.js';
 import { makeCanvas, canvasToBlob, decodeBlob, renderPage, blobUrl, fitCanvas, canvasToImg, imgToCanvas } from '../imaging.js';
-import { detectQuad, detectSmart, sharpness, BLUR_THRESHOLD, mlReady, loadMl, FULL } from '../detect.js';
+import { detectQuad, detectSmart, refineHiRes, sharpness, BLUR_THRESHOLD, mlReady, warmupDetector, FULL } from '../detect.js';
 import { loadOpenCV, cvReady } from '../loader.js';
 import { blankPage, addPages, composeIdCard, importFiles, removePagesFromDoc } from '../pages.js';
 import { createCropper } from '../cropper.js';
@@ -271,6 +271,7 @@ export async function render(root, params) {
       const sharp = sharpNow >= BLUR_THRESHOLD;
       drawOverlay(smooth, sharp);
       const now = performance.now();
+      if (!smooth) ovState.progress = 0;
       if (!smooth) newPageReady = true; // se retiró o tapó la hoja: la siguiente será nueva
       if (!cvReady() && !mlReady()) setHint('Preparando detección de bordes…');
       else if (!smooth && isDark() && flashMode() === 'off') { setHint('Poca luz: activa el flash o acércate a una lámpara'); stableSince = 0; }
@@ -284,6 +285,7 @@ export async function render(root, params) {
         // La captura automática exige además que la imagen esté nítida
         const armed = settings.autoCapture && stableSince && now > cooldownUntil && newPageReady && sharp;
         $('#shutter', root).classList.toggle('armed', !!armed);
+        ovState.progress = armed ? Math.min(1, (now - stableSince) / 1200) : 0;
         if (armed && now - stableSince > 1200) { setHint(''); lastSig = signature(r.canvas, smooth); capture(true); }
         else if (!sharp) setHint('Imagen borrosa: sujeta firme o acerca un poco');
         else if (!settings.autoCapture) setHint(wantFlash() && (torchSupported || photoFlash) ? 'Documento detectado · se usará el flash' : 'Documento detectado · pulsa el botón');
@@ -292,24 +294,54 @@ export async function render(root, params) {
       }
       lastQuad = smooth;
     }
-    setTimeout(() => requestAnimationFrame(loop), 60);
+    setTimeout(() => requestAnimationFrame(loop), 25);
   }
 
-  function drawOverlay(q, sharp = true) {
+  // Marco animado a 60 fps (como Google/Adobe): las esquinas se deslizan suavemente hacia
+  // la última detección, y mientras la hoja está quieta se llena un círculo de progreso
+  // en el centro; al capturar aparece un ✓.
+  const ovState = { target: null, shown: null, alpha: 0, sharp: true, progress: 0, check: 0 };
+  function drawOverlay(q, sharp = true) { ovState.target = q; ovState.sharp = sharp; }
+  function anim() {
+    if (!running) return;
+    const st = ovState;
+    if (st.target) {
+      st.shown = st.shown ? st.shown.map((p, i) => [p[0] + (st.target[i][0] - p[0]) * 0.35, p[1] + (st.target[i][1] - p[1]) * 0.35]) : st.target.map(p => [...p]);
+      st.alpha = Math.min(1, st.alpha + 0.15);
+    } else st.alpha = Math.max(0, st.alpha - 0.12);
+    st.check = Math.max(0, st.check - 0.025);
     const r = displayRect();
     const dpr = window.devicePixelRatio || 1;
-    ov.style.width = `${stage.clientWidth}px`; ov.style.height = `${stage.clientHeight}px`;
-    ov.width = stage.clientWidth * dpr; ov.height = stage.clientHeight * dpr;
+    const W = Math.round(stage.clientWidth * dpr), H = Math.round(stage.clientHeight * dpr);
+    if (ov.width !== W || ov.height !== H) {
+      ov.width = W; ov.height = H; ov.style.width = `${stage.clientWidth}px`; ov.style.height = `${stage.clientHeight}px`;
+    }
     const c = ov.getContext('2d');
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c.clearRect(0, 0, ov.width, ov.height);
-    if (!q) return;
-    const pts = q.map(([x, y]) => [r.x + x * r.w, r.y + y * r.h]);
-    c.beginPath(); c.moveTo(...pts[0]); pts.slice(1).forEach(p => c.lineTo(...p)); c.closePath();
-    c.fillStyle = sharp ? 'rgba(45,212,191,.18)' : 'rgba(251,191,36,.16)'; c.fill();
-    c.lineWidth = 3; c.strokeStyle = sharp ? '#2dd4bf' : '#fbbf24'; c.stroke();
-    for (const p of pts) { c.beginPath(); c.arc(p[0], p[1], 6, 0, 7); c.fillStyle = '#fff'; c.fill(); }
+    c.clearRect(0, 0, W, H);
+    if (st.shown && st.alpha > 0 && video.videoWidth) {
+      const pts = st.shown.map(([x, y]) => [r.x + x * r.w, r.y + y * r.h]);
+      const col = st.sharp ? '45,212,191' : '251,191,36';
+      c.globalAlpha = st.alpha;
+      c.beginPath(); c.moveTo(...pts[0]); pts.slice(1).forEach(p => c.lineTo(...p)); c.closePath();
+      c.fillStyle = `rgba(${col},.16)`; c.fill();
+      c.lineWidth = 3; c.lineJoin = 'round'; c.strokeStyle = `rgb(${col})`; c.stroke();
+      for (const p of pts) { c.beginPath(); c.arc(p[0], p[1], 7, 0, 7); c.fillStyle = '#fff'; c.fill(); c.lineWidth = 2; c.strokeStyle = `rgb(${col})`; c.stroke(); }
+      const cx = pts.reduce((a, p) => a + p[0], 0) / 4, cy = pts.reduce((a, p) => a + p[1], 0) / 4;
+      if (st.progress > 0 || st.check > 0) {
+        c.beginPath(); c.arc(cx, cy, 30, 0, 7); c.fillStyle = 'rgba(0,0,0,.35)'; c.fill();
+        c.beginPath(); c.arc(cx, cy, 26, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (st.check > 0 ? 1 : st.progress));
+        c.lineWidth = 5; c.lineCap = 'round'; c.strokeStyle = '#fff'; c.stroke(); c.lineCap = 'butt';
+        if (st.check > 0) {
+          c.beginPath(); c.moveTo(cx - 11, cy + 1); c.lineTo(cx - 3, cy + 9); c.lineTo(cx + 12, cy - 8);
+          c.lineWidth = 5; c.lineCap = 'round'; c.strokeStyle = '#fff'; c.stroke(); c.lineCap = 'butt';
+        }
+      }
+      c.globalAlpha = 1;
+    }
+    requestAnimationFrame(anim);
   }
+
 
   // ---------- Captura ----------
   let busyCapture = false;
@@ -384,6 +416,7 @@ export async function render(root, params) {
     busyCapture = true;
     const fl = $('#flash', root); fl.classList.add('go'); requestAnimationFrame(() => requestAnimationFrame(() => fl.classList.remove('go')));
     if (navigator.vibrate) navigator.vibrate(30);
+    ovState.progress = 0; if (smooth) ovState.check = 1;
     lastCaptureQuad = smooth; cooldownUntil = performance.now() + 2500; stableSince = 0; newPageReady = false;
     if (mode !== 'id') shots++;
     const liveQuad = smooth;
@@ -398,8 +431,8 @@ export async function render(root, params) {
   async function handleShot(blob, liveQuad) {
     let preview = await decodeBlob(blob, 1600);
     const det = await detectSmart(preview).catch(() => ({ quad: null }));
-    let q = det.quad;
-    if (!q && liveQuad) q = liveQuad;
+    let q = det.quad ? refineHiRes(preview, det.quad) : null;
+    if (!q && liveQuad) q = refineHiRes(preview, liveQuad);
     const blurry = det.canvas ? sharpness(det.canvas, q) < BLUR_THRESHOLD * 0.8 : false;
     let rotation = 0;
     if (!q || blurry || settings.reviewCapture) {
@@ -657,10 +690,10 @@ export async function render(root, params) {
     }
   }
   loadOpenCV().catch(() => {});
-  loadMl();
+  warmupDetector();
   import('../upgrader.js').then(m => m.pauseUpgrades(true)).catch(() => {});
   import('../autoocr.js').then(m => m.pauseAutoOcr(true)).catch(() => {});
-  try { await startCamera(); setHint(''); loop(); } catch (e) { console.warn(e); showCamError(e); }
+  try { await startCamera(); setHint(''); loop(); anim(); } catch (e) { console.warn(e); showCamError(e); }
 
   return () => {
     running = false;
