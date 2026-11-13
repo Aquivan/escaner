@@ -3,7 +3,7 @@ import { loadSettings } from './settings.js';
 import { loadOpenCV, onStatus } from './loader.js';
 import { toast, h, $ } from './ui.js';
 
-export const APP_VERSION = '14';
+export const APP_VERSION = '15';
 window.APP_VERSION = APP_VERSION;
 
 const views = {
@@ -71,6 +71,8 @@ function setupStatusPill() {
 async function start() {
   await loadSettings();
   setupStatusPill();
+  // 🧾 abierto desde el Portal de Vouchers: al exportar aparece «✅ Enviar a Vouchers»
+  import('./vouchers.js').then(m => { if (m.paraVouchers()) setTimeout(() => toast('🧾 Escaneando para Vouchers: al terminar, toque Exportar → ✅ Enviar a Vouchers', 'ok'), 800); }).catch(() => {});
   const initial = history.state && views[history.state.name] ? history.state : { name: 'home', params: {} };
   history.replaceState(initial, '');
   await render(initial);

@@ -1,6 +1,6 @@
 // Service worker: la app funciona sin conexión y las librerías pesadas
 // (OpenCV, OCR, PDF) se descargan una sola vez.
-const VERSION = 'v14';
+const VERSION = 'v15';
 const APP = `escaner-app-${VERSION}`;
 const LIBS = 'escaner-libs-v1'; // librerías versionadas: no cambian entre versiones de la app
 
@@ -10,7 +10,7 @@ const SHELL = [
   'js/filters.js', 'js/filter-worker.js', 'js/imaging.js', 'js/detect.js', 'js/pages.js', 'js/cropper.js',
   'js/sortable.js', 'js/ranges.js', 'js/exporter.js', 'js/upgrader.js', 'js/autoocr.js', 'js/docx.js', 'js/vcard.js', 'js/docinfo.js', 'js/backup.js', 'js/export-sheet.js', 'js/ocr-engine.js',
   'js/views/home.js', 'js/views/camera.js', 'js/views/crop.js', 'js/views/editor.js', 'js/views/doc.js',
-  'js/views/annotate.js', 'js/views/ocr.js', 'js/views/pdftools.js',
+  'js/views/annotate.js', 'js/views/ocr.js', 'js/views/pdftools.js', 'js/vouchers.js',
 ];
 
 self.addEventListener('message', e => { if (e.data === 'skipWaiting') self.skipWaiting(); });

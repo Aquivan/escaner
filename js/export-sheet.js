@@ -6,6 +6,7 @@ import { settings, save } from './settings.js';
 import { DPI_PRESETS, QUALITY_PRESETS, PAGE_SIZES, buildPdf, buildImages, zipFiles, estimateSize, ocrText } from './exporter.js';
 import { recognizePage } from './ocr-engine.js';
 import * as db from './db.js';
+import { paraVouchers, enviarAVouchers } from './vouchers.js';
 
 export function openExport(doc, pages, { shareFirst = false } = {}) {
   const o = { ...settings.export };
@@ -46,9 +47,14 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
     <div class="est"><div><div class="small muted">Peso estimado · ${pages.length} pág.</div><b id="est">—</b></div><small id="estNote"></small></div>
   </div>`);
   const canShare = !!(navigator.canShare && navigator.share);
+  const vou = paraVouchers();   // 🧾 abierto desde el Portal de Vouchers
+  if (vou && o.format !== 'pdf' && o.format !== 'jpg') o.format = 'pdf';
   const s = sheet({
-    title: 'Exportar', body,
-    actions: [
+    title: vou ? 'Enviar a Vouchers' : 'Exportar', body,
+    actions: vou ? [
+      { label: 'Descargar', icon: 'download', onClick: () => run(false) },
+      { label: '✅ Enviar a Vouchers', icon: 'share', cls: 'primary', onClick: () => run('vouchers') },
+    ] : [
       ...(canShare ? [{ label: 'Compartir / Drive', icon: 'share', onClick: () => run(true) }] : []),
       { label: 'Descargar', icon: 'download', cls: 'primary', onClick: () => run(false) },
     ],
@@ -144,6 +150,12 @@ export function openExport(doc, pages, { shareFirst = false } = {}) {
         files = await buildImages(pages, o, o.format, (f, d) => pr.set(f, d), name);
       }
       pr.close();
+      if (share === 'vouchers') {   // 🧾 al Portal de Vouchers (PDF = Original; JPG = Foto)
+        if (files.some(f => !/^(application\/pdf|image\/)/.test(f.type))) { toast('Para Vouchers elija PDF o JPG', 'error'); return false; }
+        toast('Enviando al Portal de Vouchers…', 'ok');
+        await enviarAVouchers(files);
+        return true;
+      }
       if (share) {
         const ok = await shareFiles(files, name);
         if (!ok) { toast('Este navegador no permite compartir; se descargará'); deliver(files, name); }
