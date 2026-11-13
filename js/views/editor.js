@@ -67,6 +67,18 @@ export async function render(root, params) {
       </div>
     </div>`;
   const cv = $('#cv', root), spin = $('#spin', root), strip = $('#strip', root);
+  // Ajusta la imagen al espacio disponible (completa, sin recortes), como en Anotar
+  const stageEl = $('#stage', root);
+  function fitView() {
+    if (!cv.width || !cv.height) return;
+    const sw = stageEl.clientWidth - 16, sh = stageEl.clientHeight - 16;
+    if (sw <= 0 || sh <= 0) return;
+    const k = Math.min(sw / cv.width, sh / cv.height);
+    cv.style.width = `${Math.floor(cv.width * k)}px`;
+    cv.style.height = `${Math.floor(cv.height * k)}px`;
+  }
+  const ro = new ResizeObserver(fitView);
+  ro.observe(stageEl);
 
   // Recuerda la página actual en el historial para volver a ella desde recortar/anotar/OCR
   const remember = () => history.replaceState({ name: 'editor', params: { ...params, index: idx } }, '');
@@ -99,6 +111,7 @@ export async function render(root, params) {
     if (tok !== renderTok) return;
     const c = imgToCanvas(out);
     cv.width = c.width; cv.height = c.height;
+    fitView();
     cv.getContext('2d').drawImage(c, 0, 0);
     if (page.annotations?.length) await drawAnnotations(cv.getContext('2d'), page.annotations, cv.width, cv.height);
     spin.hidden = true;
@@ -368,5 +381,5 @@ export async function render(root, params) {
 
   await drawStrip();
   await load(idx);
-  return () => { sortable && sortable.destroy(); return persist(); };
+  return () => { ro.disconnect(); sortable && sortable.destroy(); return persist(); };
 }
